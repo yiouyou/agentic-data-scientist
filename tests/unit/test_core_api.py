@@ -244,3 +244,87 @@ class TestDataScientist:
         assert stage_count == 1
         assert decision_count == 1
         ds.cleanup()
+
+    def test_build_planner_history_advice_disabled(self, monkeypatch):
+        """Planner advice should be disabled by env switch."""
+
+        class DummyHistoryStore:
+            def build_planner_advice(self, *, user_request, k, recent_limit):
+                del user_request, k, recent_limit
+                return "should-not-be-used"
+
+        ds = DataScientist(agent_type="adk")
+        ds._history_store = DummyHistoryStore()
+        monkeypatch.setenv("ADS_LEARNING_ADVICE_ENABLED", "false")
+
+        advice = ds._build_planner_history_advice(user_message="analyze rnaseq data")
+        assert advice == ""
+        ds.cleanup()
+
+    def test_build_planner_history_advice_from_store(self, monkeypatch):
+        """Planner advice should be pulled from history store when enabled."""
+
+        class DummyHistoryStore:
+            def __init__(self):
+                self.calls = 0
+
+            def build_planner_advice(self, *, user_request, k, recent_limit):
+                self.calls += 1
+                assert "rnaseq" in user_request
+                assert k == 2
+                assert recent_limit == 50
+                return "Historical Planning Signals (advice-only): ..."
+
+        ds = DataScientist(agent_type="adk")
+        store = DummyHistoryStore()
+        ds._history_store = store
+        monkeypatch.setenv("ADS_LEARNING_ADVICE_ENABLED", "true")
+        monkeypatch.setenv("ADS_LEARNING_TOPK", "2")
+        monkeypatch.setenv("ADS_LEARNING_RECENT_RUNS", "50")
+
+        advice = ds._build_planner_history_advice(user_message="rnaseq differential expression")
+        assert "Historical Planning Signals" in advice
+        assert store.calls == 1
+        ds.cleanup()
+
+    def test_build_planner_history_signals_disabled(self, monkeypatch):
+        """Structured planner signals should be disabled by env switch."""
+
+        class DummyHistoryStore:
+            def build_planner_signals(self, *, user_request, k, recent_limit):
+                del user_request, k, recent_limit
+                return {"hot": {"run_count": 10}}
+
+        ds = DataScientist(agent_type="adk")
+        ds._history_store = DummyHistoryStore()
+        monkeypatch.setenv("ADS_LEARNING_ADVICE_ENABLED", "false")
+
+        signals = ds._build_planner_history_signals(user_message="analyze rnaseq data")
+        assert signals == {}
+        ds.cleanup()
+
+    def test_build_planner_history_signals_from_store(self, monkeypatch):
+        """Structured planner signals should be pulled from history store when enabled."""
+
+        class DummyHistoryStore:
+            def __init__(self):
+                self.calls = 0
+
+            def build_planner_signals(self, *, user_request, k, recent_limit):
+                self.calls += 1
+                assert "rnaseq" in user_request
+                assert k == 2
+                assert recent_limit == 50
+                return {"hot": {"run_count": 12}, "topk_similar_runs": []}
+
+        ds = DataScientist(agent_type="adk")
+        store = DummyHistoryStore()
+        ds._history_store = store
+        monkeypatch.setenv("ADS_LEARNING_ADVICE_ENABLED", "true")
+        monkeypatch.setenv("ADS_LEARNING_TOPK", "2")
+        monkeypatch.setenv("ADS_LEARNING_RECENT_RUNS", "50")
+
+        signals = ds._build_planner_history_signals(user_message="rnaseq differential expression")
+        assert signals.get("hot", {}).get("run_count") == 12
+        assert store.calls == 1
+        ds.cleanup()

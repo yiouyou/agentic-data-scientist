@@ -59,6 +59,14 @@ ANTHROPIC_API_KEY=your_anthropic_key_here
 # LLM_CIRCUIT_BREAKER_MAX_COOLDOWN_SECONDS=1800
 # ADS_HISTORY_ENABLED=true
 # ADS_HISTORY_DB_PATH=.agentic_ds_history.sqlite3
+# ADS_LEARNING_ADVICE_ENABLED=true
+# ADS_LEARNING_TOPK=3
+# ADS_LEARNING_RECENT_RUNS=200
+# ADS_PLAN_SELECTOR_ENABLED=false
+# ADS_PLAN_SELECTOR_ROLLOUT_PERCENT=100
+# ADS_PLAN_SELECTOR_INTENT_REGEXES=rna-?seq,variant,wgs
+# ADS_PLAN_SELECTOR_ROLLOUT_SALT=
+# ADS_PLAN_RANK_MIN_SWITCH_MARGIN=0.12
 # CODEX_COMMAND_TEMPLATE="codex exec --model {model}"
 # OPENCODE_COMMAND_TEMPLATE="opencode run --model {model}"
 ```
@@ -74,6 +82,13 @@ ANTHROPIC_API_KEY=your_anthropic_key_here
 ```bash
 agentic-data-scientist --llm-preflight --llm-config configs/llm_routing.yaml
 ```
+
+离线规划策略回放：
+```bash
+agentic-data-scientist --history-replay --history-replay-limit 200
+```
+
+可使用 `ADS_PLAN_SELECTOR_INTENT_REGEXES` 将学习型计划选择限制在特定任务意图/领域上，实现按任务类型灰度。
 
 ### 2. 运行第一条查询
 

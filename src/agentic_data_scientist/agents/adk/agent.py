@@ -27,6 +27,7 @@ from typing_extensions import override
 from agentic_data_scientist.agents.adk.event_compression import create_compression_callback
 from agentic_data_scientist.agents.adk.implementation_loop import make_implementation_agents
 from agentic_data_scientist.agents.adk.loop_detection import LoopDetectionAgent
+from agentic_data_scientist.agents.adk.plan_selector import PlanCandidateSelectorAgent
 from agentic_data_scientist.agents.adk.review_confirmation import create_review_confirmation_agent
 from agentic_data_scientist.agents.adk.utils import (
     DEFAULT_MODEL_NAME,
@@ -588,6 +589,28 @@ def stage_reflector_callback(callback_context: CallbackContext):
     state[StateKeys.HIGH_LEVEL_STAGES] = constraints.stages
 
 
+def _append_plan_candidate(state: dict, plan_text: str, max_candidates: int = 8) -> None:
+    """Append one plan candidate to state with dedupe and cap."""
+    if not isinstance(state, dict):
+        return
+    text = str(plan_text or "").strip()
+    if not text:
+        return
+
+    existing = state.get(StateKeys.PLAN_CANDIDATES, [])
+    candidates: List[str] = []
+    if isinstance(existing, list):
+        candidates = [str(item).strip() for item in existing if str(item).strip()]
+
+    if text not in candidates:
+        candidates.append(text)
+
+    if len(candidates) > max(1, int(max_candidates)):
+        candidates = candidates[-max(1, int(max_candidates)) :]
+
+    state[StateKeys.PLAN_CANDIDATES] = candidates
+
+
 class NonEscalatingLoopAgent(LoopAgent):
     """A loop agent that does not propagate escalate flags upward."""
 
@@ -777,6 +800,12 @@ def create_agent(
         model_name=str(getattr(plan_maker_model, "model", DEFAULT_MODEL_NAME)),
     )
 
+    async def combined_plan_maker_callback(callback_context):
+        ctx = callback_context._invocation_context
+        state = ctx.session.state
+        _append_plan_candidate(state, str(state.get(StateKeys.HIGH_LEVEL_PLAN, "") or ""))
+        await plan_maker_compression(callback_context)
+
     plan_maker_agent = LoopDetectionAgent(
         name="plan_maker_agent",
         model=plan_maker_model,
@@ -799,7 +828,7 @@ def create_agent(
             ),
         ),
         generate_content_config=get_generate_content_config(temperature=0.6),
-        after_agent_callback=plan_maker_compression,
+        after_agent_callback=combined_plan_maker_callback,
     )
 
     logger.info("[AgenticDS] Loading plan reviewer agent prompt")
@@ -859,6 +888,14 @@ def create_agent(
             ),
         ],
         max_iterations=10,
+    )
+
+    plan_candidate_selector = PlanCandidateSelectorAgent(
+        name="plan_candidate_selector",
+        description=(
+            "Ranks collected plan candidates with historical signals and keeps "
+            "baseline unless margin is strong."
+        ),
     )
 
     # ------------------------- High Level Plan Parser -------------------------
@@ -991,6 +1028,7 @@ def create_agent(
         description="Complete Agentic Data Scientist workflow with adaptive stage-wise implementation.",
         sub_agents=[
             high_level_planning_loop,
+            plan_candidate_selector,
             high_level_plan_parser,
             stage_orchestrator,
             summary_agent,

@@ -25,6 +25,31 @@ Agentic Data Scientist is an open-source framework that uses a sophisticated mul
 - 🛠️ **Extensible**: Customize prompts, agents, and workflows
 - 📦 **Easy Installation**: Available via pip and uvx
 
+## Optimization Highlights (Why These Changes Were Made)
+
+Recent updates prioritize correctness and operational safety before speed:
+
+- **Quality and Stability first**
+  - Strict structured-output validation and deterministic stage completion gates.
+  - Minimal knowledge constraints for parsed plans (`depends_on`, required inputs/outputs, evidence refs).
+  - Why: prevent invalid plans and silent state drift from propagating into execution.
+
+- **Runtime resilience for multi-LLM routing**
+  - Per-role primary/fallback, retry limits, and role/profile circuit breaker with cooldown.
+  - Why: reduce hard failures when one provider/model degrades, while preventing retry storms.
+
+- **Learning-driven planning with guardrails**
+  - Persistent history store (`run_summary`, `stage_outcome`, `decision_trace`).
+  - Advice-only planner signals (`hot` aggregates + `top-k` similar runs).
+  - Conservative plan selector (keeps baseline unless improvement margin is clear).
+  - Guarded rollout controls (`enabled`, `rollout_percent`, intent regex) and offline replay report.
+  - Why: improve planning quality gradually, with rollback controls and measurable policy effects.
+
+- **Maintainability and extensibility**
+  - Centralized state contracts in `core/state_contracts.py`.
+  - Pluggable execution backends (`claude_code`, `codex`, `opencode`) plus workflow manifest/executor layer.
+  - Why: reduce state-key drift and make new domains/workflows easier to integrate.
+
 ## Quick Start
 
 ### Prerequisites
@@ -208,9 +233,10 @@ Agentic Data Scientist uses a multi-phase workflow designed to produce high-qual
         │   (Repeated for each stage)  │
         │                              │
         │  ┌───────────────────────┐   │
-        │  │ Coding Agent          │   │
+        │  │ Execution Agent       │   │
         │  │ Implements the stage  │   │  Stage-by-stage
-        │  │ (uses Claude Code)    │   │  implementation with
+        │  │ (Claude/Codex/OpenCode│   │  implementation with
+        │  │  + workflows)         │   │  continuous validation
         │  └──────────┬────────────┘   │  continuous validation
         │             │                │
         │  ┌──────────▼────────────┐   │
@@ -322,6 +348,14 @@ ANTHROPIC_API_KEY=your_key_here
 # LLM_CIRCUIT_BREAKER_MAX_COOLDOWN_SECONDS=1800
 # ADS_HISTORY_ENABLED=true
 # ADS_HISTORY_DB_PATH=.agentic_ds_history.sqlite3
+# ADS_LEARNING_ADVICE_ENABLED=true
+# ADS_LEARNING_TOPK=3
+# ADS_LEARNING_RECENT_RUNS=200
+# ADS_PLAN_SELECTOR_ENABLED=false
+# ADS_PLAN_SELECTOR_ROLLOUT_PERCENT=100
+# ADS_PLAN_SELECTOR_INTENT_REGEXES=rna-?seq,variant,wgs
+# ADS_PLAN_SELECTOR_ROLLOUT_SALT=
+# ADS_PLAN_RANK_MIN_SWITCH_MARGIN=0.12
 # CODEX_COMMAND_TEMPLATE="codex exec --model {model}"
 # OPENCODE_COMMAND_TEMPLATE="opencode run --model {model}"
 ```
@@ -329,6 +363,11 @@ ANTHROPIC_API_KEY=your_key_here
 Optional startup validation:
 ```bash
 agentic-data-scientist --llm-preflight --llm-config configs/llm_routing.yaml
+```
+
+Offline planner policy replay (history-based, proxy metric):
+```bash
+agentic-data-scientist --history-replay --history-replay-limit 200
 ```
 
 ### Tools & Skills

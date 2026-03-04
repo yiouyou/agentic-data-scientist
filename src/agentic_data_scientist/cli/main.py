@@ -18,6 +18,7 @@ from agentic_data_scientist.core.llm_config import (
     validate_routing_config,
     write_llm_config_template,
 )
+from agentic_data_scientist.core.history_store import create_history_store_from_env
 from agentic_data_scientist.core.llm_preflight import format_preflight_report, run_llm_preflight
 
 
@@ -99,6 +100,18 @@ logger = logging.getLogger(__name__)
     is_flag=True,
     help='Write template LLM config to --llm-config path if it does not exist',
 )
+@click.option(
+    '--history-replay',
+    is_flag=True,
+    help='Run offline planner-selection counterfactual replay report and exit',
+)
+@click.option(
+    '--history-replay-limit',
+    type=int,
+    default=200,
+    show_default=True,
+    help='Recent planner-selection records to include in replay report',
+)
 def main(
     query: Optional[str],
     files: tuple,
@@ -111,13 +124,15 @@ def main(
     llm_preflight: bool,
     llm_config: str,
     write_llm_template: bool,
+    history_replay: bool,
+    history_replay_limit: int,
 ):
     """
     Run Agentic Data Scientist with a query.
 
     IMPORTANT: For normal execution, you must specify --mode to choose between
     orchestrated (with planning) or simple (direct coding) execution.
-    Preflight mode (--llm-preflight) does not require --mode.
+    Preflight mode (--llm-preflight) and history replay mode (--history-replay) do not require --mode.
 
     MODE (REQUIRED):
         orchestrated: Full multi-agent system with planning, verification, and routed coding implementation
@@ -162,6 +177,9 @@ def main(
 
         LLM preflight:
             agentic-data-scientist --llm-preflight --llm-config configs/llm_routing.yaml
+
+        History replay:
+            agentic-data-scientist --history-replay --history-replay-limit 200
     """
     # Set logging level
     if verbose:
@@ -206,8 +224,52 @@ def main(
             sys.exit(1)
         return
 
+    if history_replay:
+        store = create_history_store_from_env()
+        if store is None:
+            click.echo(
+                "History replay unavailable: ADS_HISTORY_ENABLED is disabled in environment.",
+                err=True,
+            )
+            sys.exit(1)
+        try:
+            report = store.run_counterfactual_replay(recent_limit=max(1, history_replay_limit))
+        except Exception as e:
+            click.echo(f"History replay failed: {e}", err=True)
+            sys.exit(1)
+
+        summary = report.get("summary", {})
+        click.echo("Planner Selection Replay (offline proxy):")
+        click.echo(f"- records: {summary.get('records', 0)}")
+        click.echo(f"- switch_rate: {summary.get('switch_rate', 0.0):.3f}")
+        click.echo(f"- avg_observed_reward: {summary.get('avg_observed_reward', 0.0):.3f}")
+        click.echo(f"- avg_policy_gain_proxy: {summary.get('avg_policy_gain_proxy', 0.0):.3f}")
+        click.echo(
+            "- avg_observed_reward_when_switched: "
+            f"{summary.get('avg_observed_reward_when_switched', 0.0):.3f}"
+        )
+        note = str(summary.get("note", "") or "")
+        if note:
+            click.echo(f"- note: {note}")
+
+        records = report.get("records", [])
+        if isinstance(records, list) and records:
+            click.echo("")
+            click.echo("Recent sample records:")
+            for item in records[:5]:
+                run_id = item.get("run_id", "")
+                status = item.get("status", "")
+                switched = bool(item.get("switch_applied", False))
+                reward = float(item.get("observed_reward", 0.0) or 0.0)
+                gain = float(item.get("policy_gain_proxy", 0.0) or 0.0)
+                click.echo(
+                    f"- run={run_id} status={status} "
+                    f"switch={str(switched).lower()} reward={reward:.3f} gain={gain:.3f}"
+                )
+        return
+
     if not mode:
-        click.echo("Error: --mode is required unless --llm-preflight is used.", err=True)
+        click.echo("Error: --mode is required unless --llm-preflight or --history-replay is used.", err=True)
         sys.exit(1)
 
     # Get query from stdin if not provided

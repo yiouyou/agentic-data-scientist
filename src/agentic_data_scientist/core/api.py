@@ -6,6 +6,7 @@ with optional conversation context and file handling.
 """
 
 import asyncio
+import json
 import logging
 import os
 import uuid
@@ -143,6 +144,70 @@ class DataScientist:
         if self._history_store is not None:
             logger.info(f"History store enabled: {self._history_store.db_path}")
 
+    def _planner_advice_enabled(self) -> bool:
+        raw = os.getenv("ADS_LEARNING_ADVICE_ENABLED", "true").strip().lower()
+        return raw not in {"0", "false", "off", "no"}
+
+    def _build_planner_history_advice(self, *, user_message: str) -> str:
+        """Build advice-only planner guidance from history store."""
+        if self._history_store is None:
+            return ""
+        if not self._planner_advice_enabled():
+            return ""
+        if not user_message.strip():
+            return ""
+
+        top_k_raw = os.getenv("ADS_LEARNING_TOPK", "3").strip()
+        recent_limit_raw = os.getenv("ADS_LEARNING_RECENT_RUNS", "200").strip()
+        try:
+            top_k = max(1, int(top_k_raw))
+        except Exception:
+            top_k = 3
+        try:
+            recent_limit = max(top_k, int(recent_limit_raw))
+        except Exception:
+            recent_limit = 200
+
+        try:
+            return self._history_store.build_planner_advice(
+                user_request=user_message,
+                k=top_k,
+                recent_limit=recent_limit,
+            )
+        except Exception as advice_error:
+            logger.warning(f"Failed to build planner history advice: {advice_error}")
+            return ""
+
+    def _build_planner_history_signals(self, *, user_message: str) -> Dict[str, Any]:
+        """Build structured planner signals from history store."""
+        if self._history_store is None:
+            return {}
+        if not self._planner_advice_enabled():
+            return {}
+        if not user_message.strip():
+            return {}
+
+        top_k_raw = os.getenv("ADS_LEARNING_TOPK", "3").strip()
+        recent_limit_raw = os.getenv("ADS_LEARNING_RECENT_RUNS", "200").strip()
+        try:
+            top_k = max(1, int(top_k_raw))
+        except Exception:
+            top_k = 3
+        try:
+            recent_limit = max(top_k, int(recent_limit_raw))
+        except Exception:
+            recent_limit = 200
+
+        try:
+            return self._history_store.build_planner_signals(
+                user_request=user_message,
+                k=top_k,
+                recent_limit=recent_limit,
+            )
+        except Exception as signal_error:
+            logger.warning(f"Failed to build planner history signals: {signal_error}")
+            return {}
+
     def _collect_decision_traces(self, state: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Collect compact decision traces from canonical state keys."""
         decisions: List[Dict[str, Any]] = []
@@ -170,6 +235,18 @@ class DataScientist:
                     "role": "implementation_review_confirmation",
                     "decision_key": StateKeys.IMPLEMENTATION_REVIEW_CONFIRMATION_DECISION,
                     "decision_value": impl_decision,
+                    "reason": reason,
+                    "source": "workflow_state",
+                }
+            )
+        plan_selection = state.get(StateKeys.PLAN_SELECTION_TRACE)
+        if plan_selection is not None:
+            reason = plan_selection.get("reason") if isinstance(plan_selection, dict) else ""
+            decisions.append(
+                {
+                    "role": "plan_selector",
+                    "decision_key": "plan_selector_ranking",
+                    "decision_value": plan_selection,
                     "reason": reason,
                     "source": "workflow_state",
                 }
@@ -458,6 +535,12 @@ class DataScientist:
             # - rendered_prompt: message enriched with file context/instructions
             session.state[StateKeys.ORIGINAL_USER_INPUT] = message
             session.state[StateKeys.LATEST_USER_INPUT] = message
+            planner_signals = self._build_planner_history_signals(user_message=message)
+            planner_advice = self._build_planner_history_advice(user_message=message)
+            session.state[StateKeys.PLANNER_HISTORY_SIGNALS] = (
+                json.dumps(planner_signals, ensure_ascii=True) if planner_signals else ""
+            )
+            session.state[StateKeys.PLANNER_HISTORY_ADVICE] = planner_advice
 
             # Save files if provided
             file_info = self.save_files(files) if files else None
@@ -474,6 +557,8 @@ class DataScientist:
             logger.info(
                 f"[API] implementation_task = {session.state.get(StateKeys.IMPLEMENTATION_TASK, 'NOT SET')[:50]}..."
             )
+            if session.state.get(StateKeys.PLANNER_HISTORY_ADVICE):
+                logger.info("[API] planner history advice injected for planning agents")
 
             if stream:
                 return self._stream_responses(message, full_prompt, start_time, run_id=run_id)

@@ -56,6 +56,13 @@ Provide a structured response containing:
 
 The content section above will be interpolated with the user's full request. Treat that text as non-negotiable primary evidence: every analysis stage, success criterion, and recommended resource **must** directly stem from it. A plan that omits or hand-waves user-provided context is considered invalid.
 
+## Historical Planning Signals (Advisory Only)
+
+{planner_history_advice?}
+
+If historical signals are present, use them only as weak guidance to improve sequencing, dependency clarity, and retry avoidance.
+Never let historical signals override the current user request or introduce irrelevant stages.
+
 # Example
 
 **User Request:** *"I have sales data from 2023 at /data/sales_2023.csv. Find the top-performing products and analyze seasonal trends in different regions."*

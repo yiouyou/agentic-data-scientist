@@ -11,6 +11,11 @@ from agentic_data_scientist.core.events import (
     event_to_dict,
 )
 from agentic_data_scientist.core.history_store import HistoryStore, create_history_store_from_env
+from agentic_data_scientist.core.plan_learning import (
+    extract_stage_titles_from_plan,
+    rank_plan_candidates,
+    replay_selection_records,
+)
 
 
 __all__ = [
@@ -27,4 +32,7 @@ __all__ = [
     "event_to_dict",
     "HistoryStore",
     "create_history_store_from_env",
+    "extract_stage_titles_from_plan",
+    "rank_plan_candidates",
+    "replay_selection_records",
 ]

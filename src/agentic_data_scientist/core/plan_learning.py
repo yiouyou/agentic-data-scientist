@@ -1,0 +1,286 @@
+"""Learning-driven plan ranking and replay helpers (advice-first, conservative)."""
+
+from __future__ import annotations
+
+import re
+from typing import Any, Dict, List
+
+
+_TOKEN_RE = re.compile(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]+")
+_STAGE_LINE_RE = re.compile(r"^\s*(\d+)[\.\)]\s*(.+)$")
+_EN_STOPWORDS = {
+    "the",
+    "and",
+    "for",
+    "with",
+    "that",
+    "this",
+    "from",
+    "into",
+    "then",
+    "than",
+    "were",
+    "have",
+    "has",
+    "had",
+    "will",
+    "shall",
+    "would",
+    "could",
+    "should",
+    "about",
+    "after",
+    "before",
+    "your",
+    "you",
+    "our",
+    "their",
+    "analysis",
+    "stage",
+    "plan",
+    "task",
+}
+
+
+def _tokenize(text: str) -> set[str]:
+    tokens: set[str] = set()
+    for match in _TOKEN_RE.findall((text or "").lower()):
+        token = match.strip()
+        if not token:
+            continue
+        if token in _EN_STOPWORDS:
+            continue
+        if len(token) <= 1:
+            continue
+        tokens.add(token)
+    return tokens
+
+
+def _jaccard(a: set[str], b: set[str]) -> float:
+    if not a or not b:
+        return 0.0
+    inter = len(a.intersection(b))
+    union = len(a.union(b))
+    if union <= 0:
+        return 0.0
+    return float(inter) / float(union)
+
+
+def extract_stage_titles_from_plan(plan_text: str) -> List[str]:
+    """Extract stage titles heuristically from numbered list lines."""
+    titles: List[str] = []
+    for line in (plan_text or "").splitlines():
+        match = _STAGE_LINE_RE.match(line)
+        if not match:
+            continue
+        title_raw = match.group(2).strip()
+        title = re.sub(r"^\*\*(.+?)\*\*.*$", r"\1", title_raw).strip()
+        title = title.strip("-: ")
+        if title:
+            titles.append(title)
+    return titles
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def _stage_count_score(stage_count: int) -> float:
+    # Preferred window from current planning prompt guidance.
+    if 3 <= stage_count <= 7:
+        return 0.16
+    return -min(0.16, 0.04 * abs(stage_count - 5))
+
+
+def _coverage_score(user_request: str, plan_text: str) -> float:
+    return 0.45 * _jaccard(_tokenize(user_request), _tokenize(plan_text))
+
+
+def _historical_pattern_score(plan_text: str, history_signals: Dict[str, Any]) -> float:
+    score = 0.0
+    plan_tokens = _tokenize(plan_text)
+
+    topk = history_signals.get("topk_similar_runs", [])
+    if isinstance(topk, list):
+        similarities = []
+        for run in topk[:5]:
+            stage_titles = run.get("stage_titles", [])
+            joined = " ".join(stage_titles) if isinstance(stage_titles, list) else str(stage_titles or "")
+            sim = _jaccard(plan_tokens, _tokenize(joined))
+            if sim > 0:
+                similarities.append(sim)
+        if similarities:
+            score += 0.22 * (sum(similarities) / len(similarities))
+
+    workflows = history_signals.get("hot", {}).get("top_workflows", [])
+    if isinstance(workflows, list):
+        wf_bonus = 0.0
+        lower_plan = (plan_text or "").lower()
+        for item in workflows[:3]:
+            wf_id = str(item.get("workflow_id", "")).strip().lower()
+            if not wf_id:
+                continue
+            if wf_id in lower_plan:
+                success = _safe_float(item.get("success_rate"), 0.0)
+                wf_bonus += 0.04 + min(0.04, 0.04 * success)
+        score += min(0.14, wf_bonus)
+
+    return score
+
+
+def score_plan_candidate(
+    *,
+    user_request: str,
+    candidate_plan: str,
+    history_signals: Dict[str, Any],
+    is_baseline: bool,
+) -> Dict[str, Any]:
+    """Score one candidate with conservative priors."""
+    stage_titles = extract_stage_titles_from_plan(candidate_plan)
+    stage_count = len(stage_titles)
+
+    score = 0.0
+    score += _coverage_score(user_request, candidate_plan)
+    score += _stage_count_score(stage_count)
+    score += _historical_pattern_score(candidate_plan, history_signals)
+
+    hot = history_signals.get("hot", {})
+    run_count = int(hot.get("run_count", 0) or 0)
+    retry_rate = _safe_float(hot.get("stage_retry_rate"), 0.0)
+    # Conservative: if history volume is low or retries are high, penalize aggressive switching.
+    if run_count < 10:
+        score -= 0.03
+    score -= min(0.08, 0.12 * max(0.0, retry_rate))
+
+    # Keep approved baseline sticky unless alternatives are clearly better.
+    if is_baseline:
+        score += 0.08
+
+    score = max(-1.0, min(1.0, score))
+
+    return {
+        "score": score,
+        "stage_count": stage_count,
+        "stage_titles": stage_titles[:6],
+    }
+
+
+def rank_plan_candidates(
+    *,
+    user_request: str,
+    candidates: List[str],
+    history_signals: Dict[str, Any],
+    baseline_index: int = 0,
+    min_switch_margin: float = 0.12,
+) -> Dict[str, Any]:
+    """
+    Rank candidate plans using historical signals.
+
+    The policy is conservative and advice-only:
+    - choose highest score candidate
+    - keep baseline when improvement margin is below threshold
+    """
+    if not candidates:
+        return {
+            "selected_index": 0,
+            "baseline_index": baseline_index,
+            "candidate_scores": [],
+            "switch_applied": False,
+            "reason": "no_candidates",
+        }
+
+    safe_baseline = min(max(0, int(baseline_index)), len(candidates) - 1)
+    scored: List[Dict[str, Any]] = []
+
+    for idx, candidate in enumerate(candidates):
+        candidate_text = str(candidate or "").strip()
+        if not candidate_text:
+            scored.append(
+                {
+                    "index": idx,
+                    "score": -1.0,
+                    "stage_count": 0,
+                    "stage_titles": [],
+                }
+            )
+            continue
+
+        detail = score_plan_candidate(
+            user_request=user_request,
+            candidate_plan=candidate_text,
+            history_signals=history_signals,
+            is_baseline=(idx == safe_baseline),
+        )
+        scored.append({"index": idx, **detail})
+
+    best = max(scored, key=lambda item: item["score"])
+    baseline = scored[safe_baseline]
+    margin = float(best["score"]) - float(baseline["score"])
+
+    selected_index = safe_baseline
+    switch_applied = False
+    reason = "baseline_kept_conservative"
+    if best["index"] != safe_baseline and margin >= float(min_switch_margin):
+        selected_index = int(best["index"])
+        switch_applied = True
+        reason = "switched_by_margin"
+    elif best["index"] == safe_baseline:
+        reason = "baseline_already_best"
+
+    return {
+        "selected_index": selected_index,
+        "baseline_index": safe_baseline,
+        "candidate_scores": scored,
+        "switch_applied": switch_applied,
+        "margin_vs_baseline": margin,
+        "min_switch_margin": float(min_switch_margin),
+        "reason": reason,
+    }
+
+
+def replay_selection_records(records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Compute an offline counterfactual replay summary from recorded selection traces.
+
+    This is an approximate sanity-check report (not causal inference):
+    - observed reward: derived from actual run outcomes
+    - policy gain proxy: selected score - baseline score
+    """
+    if not records:
+        return {
+            "records": 0,
+            "switch_rate": 0.0,
+            "avg_observed_reward": 0.0,
+            "avg_policy_gain_proxy": 0.0,
+            "avg_observed_reward_when_switched": 0.0,
+            "note": "no_records",
+        }
+
+    total = len(records)
+    switched = 0
+    sum_reward = 0.0
+    sum_gain_proxy = 0.0
+    switched_rewards: List[float] = []
+
+    for item in records:
+        if bool(item.get("switch_applied", False)):
+            switched += 1
+        reward = _safe_float(item.get("observed_reward"), 0.0)
+        gain = _safe_float(item.get("policy_gain_proxy"), 0.0)
+        sum_reward += reward
+        sum_gain_proxy += gain
+        if bool(item.get("switch_applied", False)):
+            switched_rewards.append(reward)
+
+    avg_switched_reward = sum(switched_rewards) / len(switched_rewards) if switched_rewards else 0.0
+    return {
+        "records": total,
+        "switch_rate": float(switched) / float(total),
+        "avg_observed_reward": sum_reward / float(total),
+        "avg_policy_gain_proxy": sum_gain_proxy / float(total),
+        "avg_observed_reward_when_switched": avg_switched_reward,
+        "note": "counterfactual_is_proxy_not_causal",
+    }

@@ -25,6 +25,10 @@ class StateKeys:
     STAGE_IMPLEMENTATIONS = "stage_implementations"
 
     HIGH_LEVEL_PLAN = "high_level_plan"
+    PLANNER_HISTORY_ADVICE = "planner_history_advice"
+    PLANNER_HISTORY_SIGNALS = "planner_history_signals"
+    PLAN_CANDIDATES = "plan_candidates"
+    PLAN_SELECTION_TRACE = "plan_selection_trace"
     PLAN_REVIEW_FEEDBACK = "plan_review_feedback"
     PARSED_PLAN_OUTPUT = "parsed_plan_output"
     CRITERIA_CHECKER_OUTPUT = "criteria_checker_output"

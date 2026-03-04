@@ -1,13 +1,9 @@
 # Agentic Data Scientist
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/K-Dense-AI/agentic-data-scientist/pulls)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/yiouyou/agentic-data-scientist/pulls)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
 [![PyPI version](https://badge.fury.io/py/agentic-data-scientist.svg?icon=si%3Apython)](https://badge.fury.io/py/agentic-data-scientist)
-
-## K-Dense Web
-
-For users requiring access to substantially more powerful capabilities, **K-Dense Web** is available. Visit [k-dense.ai](https://k-dense.ai) to learn more.
 
 **An Adaptive Multi-Agent Framework for Data Science**
 
@@ -470,7 +466,7 @@ agentic-data-scientist "Temporary analysis" --mode simple --files data.csv --wor
 
 ```bash
 # Clone repository
-git clone https://github.com/K-Dense-AI/agentic-data-scientist.git
+git clone https://github.com/yiouyou/agentic-data-scientist.git
 cd agentic-data-scientist
 
 # Install with dev dependencies using uv
@@ -538,12 +534,12 @@ For maintainers:
    ```
 
 2. **Create GitHub release:**
-   - Go to https://github.com/K-Dense-AI/agentic-data-scientist/releases/new?tag=v0.2.0
+   - Go to https://github.com/yiouyou/agentic-data-scientist/releases/new?tag=v0.2.0
    - Click "Generate release notes" for automatic changelog
    - Publish release
    - Package automatically publishes to PyPI
 
-**One-time PyPI Setup:** Configure [trusted publishing](https://docs.pypi.org/trusted-publishers/) on PyPI with repo `K-Dense-AI/agentic-data-scientist` and workflow `pypi-publish.yml`.
+**One-time PyPI Setup:** Configure [trusted publishing](https://docs.pypi.org/trusted-publishers/) on PyPI with repo `yiouyou/agentic-data-scientist` and workflow `pypi-publish.yml`.
 
 Use conventional commits (`feat:`, `fix:`, `docs:`, etc.) for clean changelogs.
 
@@ -573,9 +569,8 @@ These mechanisms work together to keep the total context under 1M tokens even du
 
 ## Support
 
-- GitHub Issues: [Report bugs or request features](https://github.com/K-Dense-AI/agentic-data-scientist/issues)
-- Join our Slack Community: [K-Dense Community](https://join.slack.com/t/k-densecommunity/shared_invite/zt-3iajtyls1-EwmkwIZk0g_o74311Tkf5g)
-- Documentation: [Full documentation](https://github.com/K-Dense-AI/agentic-data-scientist/blob/main/docs)
+- GitHub Issues: [Report bugs or request features](https://github.com/yiouyou/agentic-data-scientist/issues)
+- Documentation: [Full documentation](https://github.com/yiouyou/agentic-data-scientist/blob/main/docs)
 
 ## Acknowledgments
 
@@ -588,9 +583,3 @@ Built with:
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.
-
-Copyright © 2025 K-Dense Inc. ([k-dense.ai](https://k-dense.ai))
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=K-Dense-AI/agentic-data-scientist&type=date&legend=top-left)](https://www.star-history.com/#K-Dense-AI/agentic-data-scientist&type=date&legend=top-left)

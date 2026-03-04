@@ -1,5 +1,6 @@
 .pytest_tmp/
 .test_core_api_workdir/
+.test_workflow_tmp/
 .uv-cache/
 pytest-cache-files-*/
 

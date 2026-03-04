@@ -1,0 +1,49 @@
+apiVersion: ads.workflow/v1
+kind: WorkflowManifest
+
+metadata:
+  id: demo.smoke.local_echo
+  name: Local Smoke Echo Workflow
+  domain: general
+  version: 1.0.0
+  tags: [smoke, local, routing]
+
+executor:
+  type: local_cli
+  adapter: shell
+  profile: local
+
+spec:
+  entrypoint:
+    command: >-
+      python -c "from pathlib import Path; Path('results').mkdir(exist_ok=True);
+      Path('results/smoke_report.txt').write_text('workflow smoke success', encoding='utf-8');
+      print('workflow smoke success')"
+    shell: true
+  inputs: []
+  params: []
+  outputs:
+    - name: smoke_report
+      type: file
+      path: results/smoke_report.txt
+      description: Smoke test report artifact
+
+runtime:
+  timeout_seconds: 120
+  max_retries: 0
+  resources: {}
+  env: []
+
+monitoring:
+  mode: poll
+  interval_seconds: 2
+  success:
+    exit_code: 0
+    required_outputs: [smoke_report]
+
+artifacts:
+  collect:
+    - results/*.txt
+
+security:
+  secrets: []

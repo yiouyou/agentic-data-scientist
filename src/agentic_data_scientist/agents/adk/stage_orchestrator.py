@@ -15,6 +15,12 @@ from google.genai import types
 from pydantic import PrivateAttr
 
 from agentic_data_scientist.agents.adk.event_compression import compress_events_manually
+from agentic_data_scientist.core.state_contracts import (
+    StageStatus,
+    StateKeys,
+    ensure_stage_status,
+    set_stage_status,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -51,6 +57,30 @@ def format_criteria_status(criteria: List[Dict], max_length: int = 80) -> str:
         lines.append(f"  [{status}] Criterion {c.get('index', '?')}: {criteria_text}")
 
     return "\n".join(lines)
+
+
+def _append_stage_attempt_history(
+    state: Dict[str, Any],
+    stage: Dict[str, Any],
+    *,
+    attempt: int,
+    approved: bool,
+    implementation_summary: str,
+    review_reason: str | None = None,
+) -> None:
+    """Append a normalized stage attempt record to state history."""
+    history = state.get(StateKeys.STAGE_IMPLEMENTATIONS, [])
+    entry: Dict[str, Any] = {
+        "stage_index": stage["index"],
+        "stage_title": stage["title"],
+        "attempt": attempt,
+        "approved": approved,
+        "implementation_summary": implementation_summary,
+    }
+    if review_reason:
+        entry["review_reason"] = review_reason
+    history.append(entry)
+    state[StateKeys.STAGE_IMPLEMENTATIONS] = history
 
 
 class StageOrchestratorAgent(BaseAgent):
@@ -133,16 +163,20 @@ class StageOrchestratorAgent(BaseAgent):
         state = ctx.session.state
 
         # Initialize/clear stage-specific state keys
-        if "current_stage" not in state:
-            state["current_stage"] = None
-        if "current_stage_index" not in state:
-            state["current_stage_index"] = 0
-        if "stage_implementations" not in state:
-            state["stage_implementations"] = []
+        if StateKeys.CURRENT_STAGE not in state:
+            state[StateKeys.CURRENT_STAGE] = None
+        if StateKeys.CURRENT_STAGE_INDEX not in state:
+            state[StateKeys.CURRENT_STAGE_INDEX] = 0
+        if StateKeys.STAGE_IMPLEMENTATIONS not in state:
+            state[StateKeys.STAGE_IMPLEMENTATIONS] = []
 
         # Get stages and criteria from state
-        stages: List[Dict] = state.get("high_level_stages", [])
-        criteria: List[Dict] = state.get("high_level_success_criteria", [])
+        stages: List[Dict] = state.get(StateKeys.HIGH_LEVEL_STAGES, [])
+        criteria: List[Dict] = state.get(StateKeys.HIGH_LEVEL_SUCCESS_CRITERIA, [])
+
+        # Backward-compatible status initialization
+        for stage in stages:
+            ensure_stage_status(stage)
 
         # Validate stages
         if not stages or len(stages) == 0:
@@ -238,8 +272,8 @@ class StageOrchestratorAgent(BaseAgent):
         )
 
         # Initialize stage_implementations if not exists
-        if "stage_implementations" not in state:
-            state["stage_implementations"] = []
+        if StateKeys.STAGE_IMPLEMENTATIONS not in state:
+            state[StateKeys.STAGE_IMPLEMENTATIONS] = []
 
         # Main orchestration loop
         iteration = 0
@@ -250,8 +284,8 @@ class StageOrchestratorAgent(BaseAgent):
             logger.info(f"[StageOrchestrator] === Orchestration iteration {iteration} ===")
 
             # Refresh state objects (they may have been modified by callbacks)
-            stages = state.get("high_level_stages", [])
-            criteria = state.get("high_level_success_criteria", [])
+            stages = state.get(StateKeys.HIGH_LEVEL_STAGES, [])
+            criteria = state.get(StateKeys.HIGH_LEVEL_SUCCESS_CRITERIA, [])
 
             # Check exit condition: all criteria met?
             criteria_met_count = sum(1 for c in criteria if c.get("met", False))
@@ -291,7 +325,7 @@ class StageOrchestratorAgent(BaseAgent):
                     yield event
 
                 # Refresh stages from state (reflector may have modified them)
-                stages = state.get("high_level_stages", [])
+                stages = state.get(StateKeys.HIGH_LEVEL_STAGES, [])
                 remaining_stages = [s for s in stages if not s.get("completed", False)]
 
                 if not remaining_stages:
@@ -317,8 +351,14 @@ class StageOrchestratorAgent(BaseAgent):
             # Get next stage to implement
             next_stage = remaining_stages[0]
             stage_idx = next_stage["index"]
+            attempts = int(next_stage.get("attempts", 0)) + 1
+            next_stage["attempts"] = attempts
+            set_stage_status(next_stage, StageStatus.IN_PROGRESS)
+            state[StateKeys.HIGH_LEVEL_STAGES] = stages
 
-            logger.info(f"[StageOrchestrator] 📍 Starting stage {stage_idx}: {next_stage['title']}")
+            logger.info(
+                f"[StageOrchestrator] 📍 Starting stage {stage_idx}: {next_stage['title']} (attempt {attempts})"
+            )
 
             # Create stage start event
             stage_start_event = Event(
@@ -337,16 +377,13 @@ class StageOrchestratorAgent(BaseAgent):
             )
             yield stage_start_event
 
-            # Set current stage in state (for implementation loop to read)
-            state["current_stage"] = {
-                "index": next_stage["index"],
-                "title": next_stage["title"],
-                "description": next_stage["description"],
-            }
+            # Set current stage in state (for implementation loop to read),
+            # preserving extra metadata (workflow_id/execution_mode/etc.).
+            state[StateKeys.CURRENT_STAGE] = dict(next_stage)
 
             # Clear previous implementation outputs
-            state.pop("implementation_summary", None)
-            state.pop("review_feedback", None)
+            state.pop(StateKeys.IMPLEMENTATION_SUMMARY, None)
+            state.pop(StateKeys.REVIEW_FEEDBACK, None)
 
             # === Run Implementation Loop ===
             logger.info("")
@@ -392,22 +429,65 @@ class StageOrchestratorAgent(BaseAgent):
                 )
                 yield error_event
                 # Skip this stage and continue to next
+                set_stage_status(next_stage, StageStatus.FAILED)
+                state[StateKeys.HIGH_LEVEL_STAGES] = stages
+                continue
+
+            # Read implementation review confirmation decision from state.
+            # This key is written by implementation_review_confirmation_agent.
+            decision = state.get(StateKeys.IMPLEMENTATION_REVIEW_CONFIRMATION_DECISION)
+            approved = False
+            decision_reason = "Missing implementation review confirmation decision."
+
+            if isinstance(decision, dict):
+                approved = bool(decision.get("exit", False))
+                decision_reason = decision.get("reason", decision_reason)
+
+            if not approved:
+                set_stage_status(next_stage, StageStatus.RETRYING)
+                next_stage["implementation_result"] = state.get(StateKeys.IMPLEMENTATION_SUMMARY, "")
+                state[StateKeys.HIGH_LEVEL_STAGES] = stages
+                _append_stage_attempt_history(
+                    state,
+                    next_stage,
+                    attempt=attempts,
+                    approved=False,
+                    implementation_summary=next_stage["implementation_result"],
+                    review_reason=decision_reason,
+                )
+
+                retry_event = Event(
+                    author=self.name,
+                    content=types.Content(
+                        role="model",
+                        parts=[
+                            types.Part(
+                                text=f"\n\n⚠️ Stage {stage_idx + 1} was not approved by implementation review.\n"
+                                f"Reason: {decision_reason}\n"
+                                "Marking stage as retrying and continuing iteration.\n\n"
+                            )
+                        ],
+                    ),
+                    turn_complete=False,
+                )
+                yield retry_event
+                logger.info(
+                    f"[StageOrchestrator] Stage {stage_idx} not approved on attempt {attempts}. Reason: {decision_reason}"
+                )
                 continue
 
             # Store implementation result (but don't mark as completed yet)
-            next_stage["implementation_result"] = state.get("implementation_summary", "")
+            next_stage["implementation_result"] = state.get(StateKeys.IMPLEMENTATION_SUMMARY, "")
 
             # Add to completed stages history BEFORE running checker/reflector
             # so they can see the current stage in their prompts
-            stage_implementations = state.get("stage_implementations", [])
-            stage_implementations.append(
-                {
-                    "stage_index": next_stage["index"],
-                    "stage_title": next_stage["title"],
-                    "implementation_summary": next_stage["implementation_result"],
-                }
+            _append_stage_attempt_history(
+                state,
+                next_stage,
+                attempt=attempts,
+                approved=True,
+                implementation_summary=next_stage["implementation_result"],
             )
-            state["stage_implementations"] = stage_implementations
 
             # === Run Success Criteria Checker ===
             logger.info("")
@@ -420,7 +500,7 @@ class StageOrchestratorAgent(BaseAgent):
                     yield event
 
                 # Criteria checker updates state["high_level_success_criteria"] via callback
-                criteria = state.get("high_level_success_criteria", [])
+                criteria = state.get(StateKeys.HIGH_LEVEL_SUCCESS_CRITERIA, [])
 
                 criteria_met_count = sum(1 for c in criteria if c.get("met", False))
                 logger.info(
@@ -458,7 +538,7 @@ class StageOrchestratorAgent(BaseAgent):
                     yield event
 
                 # Reflector may modify state["high_level_stages"] via callback
-                stages = state.get("high_level_stages", [])
+                stages = state.get(StateKeys.HIGH_LEVEL_STAGES, [])
             except Exception as e:
                 logger.error(
                     f"[StageOrchestrator] Stage reflector failed for stage {stage_idx}: {e}",
@@ -480,18 +560,19 @@ class StageOrchestratorAgent(BaseAgent):
                 )
                 yield error_event
                 # Refresh stages anyway
-                stages = state.get("high_level_stages", [])
+                stages = state.get(StateKeys.HIGH_LEVEL_STAGES, [])
 
             # NOW mark stage as completed (after criteria check and reflection)
             next_stage["completed"] = True
+            set_stage_status(next_stage, StageStatus.APPROVED)
 
             # Update stages in state
-            state["high_level_stages"] = stages
+            state[StateKeys.HIGH_LEVEL_STAGES] = stages
 
             logger.info(f"[StageOrchestrator] Stage {stage_idx} cycle complete. Continuing to next iteration.")
 
             # Update current_stage_index for tracking (keep 0-indexed for consistency)
-            state["current_stage_index"] = stage_idx
+            state[StateKeys.CURRENT_STAGE_INDEX] = stage_idx
 
         # Safety exit if max iterations reached
         logger.error(f"[StageOrchestrator] Reached maximum iterations ({max_iterations}). Exiting orchestration.")

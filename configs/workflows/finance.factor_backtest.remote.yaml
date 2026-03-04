@@ -1,0 +1,71 @@
+apiVersion: ads.workflow/v1
+kind: WorkflowManifest
+
+metadata:
+  id: finance.factor.backtest
+  name: Factor Backtest (Remote Service)
+  domain: finance
+  version: 1.0.0
+  tags: [factor, backtest, remote]
+
+executor:
+  type: remote_api
+  adapter: http_job
+  profile: cloud
+
+spec:
+  entrypoint:
+    submit:
+      method: POST
+      url: https://api.example.com/jobs
+      body_template:
+        workflow_id: factor_backtest_v1
+        inputs: "{inputs}"
+        params: "{params}"
+    status:
+      method: GET
+      url_template: https://api.example.com/jobs/{job_id}
+    result:
+      method: GET
+      url_template: https://api.example.com/jobs/{job_id}/artifacts
+  inputs:
+    - name: market_data
+      type: file
+      required: true
+  params:
+    - name: start_date
+      type: string
+      required: true
+    - name: end_date
+      type: string
+      required: true
+    - name: rebalance_days
+      type: integer
+      required: false
+      default: 20
+  outputs:
+    - name: metrics
+      type: file
+      path: results/metrics.json
+    - name: equity_curve
+      type: file
+      path: results/equity_curve.csv
+
+runtime:
+  timeout_seconds: 7200
+  max_retries: 2
+
+monitoring:
+  mode: poll
+  interval_seconds: 20
+  success:
+    exit_code: 0
+    required_outputs: [metrics]
+
+artifacts:
+  collect:
+    - results/**
+
+security:
+  secrets:
+    - FACTOR_API_KEY

@@ -1,5 +1,6 @@
 """Pytest configuration and fixtures."""
 
+import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -37,7 +38,26 @@ def sample_text_file(tmp_path):
     return text_file
 
 
+def _configure_local_temp_dirs() -> Path:
+    """Force all temp files to project-local .tmp directory."""
+    tmp_root = Path.cwd() / ".tmp"
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    os.environ["TMP"] = str(tmp_root)
+    os.environ["TEMP"] = str(tmp_root)
+    tempfile.tempdir = str(tmp_root)
+    return tmp_root
+
+
+def pytest_sessionstart(session):
+    """Configure temp directories as early as possible."""
+    _configure_local_temp_dirs()
+
+
 def pytest_configure(config):
     """Configure pytest with custom markers."""
+    # Keep temporary artifacts under project-local .tmp to avoid
+    # system temp directory permission issues in restricted environments.
+    _configure_local_temp_dirs()
+
     config.addinivalue_line("markers", "integration: mark test as an integration test")
     config.addinivalue_line("markers", "slow: mark test as slow running")

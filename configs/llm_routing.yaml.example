@@ -1,0 +1,84 @@
+# LLM routing config for agentic-data-scientist
+# Copy this file to configs/llm_routing.yaml and fill your own model names + API env vars.
+#
+# Notes:
+# - provider is informational for now; actual invocation uses model + optional api_base/api_key.
+# - capabilities drive static validation hints for role assignment.
+# - coding_executor is optional for coding profiles: claude_code | codex | opencode.
+# - execution_agent fallback is currently model-only within one coding_executor.
+# - prefer cross-provider fallback for resilience.
+#
+llm_profiles:
+  us_openai_reasoning:
+    provider: openai
+    model: gpt-5.2
+    api_key_env: OPENAI_API_KEY
+    temperature: 0.3
+    capabilities: [reasoning, structured_output, long_context, tool_calling]
+    enabled: true
+
+  us_anthropic_code:
+    provider: anthropic
+    model: claude-sonnet-4-6
+    api_key_env: ANTHROPIC_API_KEY
+    coding_executor: claude_code
+    temperature: 0.2
+    capabilities: [code, reasoning, long_context, tool_calling]
+    enabled: true
+
+  us_google_reasoning:
+    provider: google
+    model: gemini-3.1-pro-preview
+    api_key_env: GOOGLE_API_KEY
+    temperature: 0.3
+    capabilities: [reasoning, structured_output, long_context, tool_calling]
+    enabled: true
+
+  cn_deepseek_reasoning:
+    provider: deepseek
+    model: deepseek/deepseek-reasoner
+    api_key_env: DEEPSEEK_API_KEY
+    api_base: https://api.deepseek.com
+    temperature: 0.2
+    capabilities: [reasoning]
+    enabled: true
+
+  cn_deepseek_chat:
+    provider: deepseek
+    model: deepseek/deepseek-chat
+    api_key_env: DEEPSEEK_API_KEY
+    api_base: https://api.deepseek.com
+    temperature: 0.1
+    capabilities: [reasoning, structured_output, tool_calling]
+    enabled: true
+
+  cn_qwen_reasoning:
+    provider: dashscope
+    model: openai/qwen3.5-plus
+    api_key_env: DASHSCOPE_API_KEY
+    api_base: https://coding.dashscope.aliyuncs.com/v1
+    temperature: 0.0
+    capabilities: [reasoning, structured_output, long_context, tool_calling]
+    enabled: true
+
+  cn_qwen_code:
+    provider: dashscope
+    model: openai/qwen3-coder-plus
+    api_key_env: DASHSCOPE_API_KEY
+    api_base: https://coding.dashscope.aliyuncs.com/v1
+    # Example: route this coding profile to OpenCode CLI executor.
+    # coding_executor: opencode
+    temperature: 0.1
+    capabilities: [code, structured_output, tool_calling]
+    enabled: true
+
+agent_routing:
+  plan_maker: {primary: us_openai_reasoning, fallback: cn_deepseek_reasoning, max_retry: 1}
+  plan_reviewer: {primary: cn_deepseek_reasoning, fallback: us_google_reasoning, max_retry: 1}
+  plan_parser: {primary: cn_qwen_reasoning, fallback: us_openai_reasoning, max_retry: 1}
+  criteria_checker: {primary: cn_qwen_reasoning, fallback: us_openai_reasoning, max_retry: 1}
+  stage_reflector: {primary: us_google_reasoning, fallback: cn_deepseek_reasoning, max_retry: 1}
+  # preferred role key: execution_agent (legacy alias: coding_agent)
+  execution_agent: {primary: us_anthropic_code, fallback: cn_qwen_code, max_retry: 1}
+  review_agent: {primary: cn_deepseek_chat, fallback: us_openai_reasoning, max_retry: 1}
+  summary_agent: {primary: cn_qwen_reasoning, fallback: us_openai_reasoning, max_retry: 1}

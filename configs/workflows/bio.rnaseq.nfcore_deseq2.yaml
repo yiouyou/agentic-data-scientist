@@ -1,0 +1,72 @@
+apiVersion: ads.workflow/v1
+kind: WorkflowManifest
+
+metadata:
+  id: bio.rnaseq.nfcore_deseq2
+  name: RNA-seq Differential Expression (nf-core + DESeq2)
+  domain: bioinformatics
+  version: 1.0.0
+  tags: [rnaseq, nf-core, deseq2]
+
+executor:
+  type: local_cli
+  adapter: nextflow
+  profile: local
+
+spec:
+  entrypoint:
+    command: >-
+      nextflow run nf-core/rnaseq
+      -profile docker
+      --input {inputs.sample_sheet}
+      --outdir {runtime_outdir}
+  inputs:
+    - name: sample_sheet
+      type: file
+      required: true
+      description: CSV sample sheet required by nf-core/rnaseq
+    - name: reference_genome
+      type: string
+      required: true
+      description: Genome key, e.g. GRCh38
+  params:
+    - name: min_counts
+      type: integer
+      required: false
+      default: 10
+    - name: fdr_threshold
+      type: number
+      required: false
+      default: 0.05
+  outputs:
+    - name: de_genes
+      type: file
+      path: results/deseq2/differential_expression.tsv
+    - name: qc_report
+      type: file
+      path: results/multiqc/multiqc_report.html
+
+runtime:
+  timeout_seconds: 86400
+  max_retries: 1
+  resources:
+    cpu: 16
+    memory_gb: 64
+  env:
+    - name: NXF_HOME
+      value: .nxf
+
+monitoring:
+  mode: poll
+  interval_seconds: 30
+  success:
+    exit_code: 0
+    required_outputs: [de_genes]
+
+artifacts:
+  collect:
+    - results/**
+    - .nextflow.log
+
+security:
+  secrets: []

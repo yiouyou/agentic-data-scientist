@@ -31,15 +31,19 @@ Agentic Data Scientist is an open-source framework that uses a sophisticated mul
 
 Before using Agentic Data Scientist, you must have:
 
-1. **Claude Code CLI** installed
-   ```bash
-   npm install -g @anthropic-ai/claude-code
-   ```
-   Or visit [Claude Code Quickstart](https://code.claude.com/docs/en/quickstart)
+1. **At least one coding executor** installed
+   - Claude Code CLI:
+     ```bash
+     npm install -g @anthropic-ai/claude-code
+     ```
+     Quickstart: [Claude Code Quickstart](https://code.claude.com/docs/en/quickstart)
+   - Optional alternatives:
+     - Codex CLI (`codex`)
+     - OpenCode CLI (`opencode`)
 
 2. **Required API Keys** configured (see Configuration section below)
-   - OPENROUTER_API_KEY (for planning and review agents)
-   - ANTHROPIC_API_KEY (for coding agent)
+   - Key(s) for your selected coding executor profile
+   - Provider keys for profiles enabled in `configs/llm_routing.yaml`
 
 ### Installation
 
@@ -55,24 +59,36 @@ uvx agentic-data-scientist --mode simple "your query here"
 
 **API Keys**
 
-You must configure two API keys:
+Use layered configuration:
 
-1. **OpenRouter API Key** (required for planning and review agents):
-   ```bash
-   export OPENROUTER_API_KEY="your_key_here"
-   ```
-   Get your key at: https://openrouter.ai/keys
+1. **Core Required**
+   - Key for your selected coding executor profile:
+     - `ANTHROPIC_API_KEY` (when coding profile uses `coding_executor: claude_code`)
+     - `OPENAI_API_KEY` (when coding profile uses `coding_executor: codex`)
+     - Other provider keys based on your routed coding profile
 
-2. **Anthropic API Key** (required for coding agent):
-   ```bash
-   export ANTHROPIC_API_KEY="your_key_here"
-   ```
-   Get your key at: https://console.anthropic.com/
+2. **Required If Enabled In `configs/llm_routing.yaml`**
+   - `OPENAI_API_KEY`
+   - `GOOGLE_API_KEY`
+   - `DASHSCOPE_API_KEY`
+   - `DEEPSEEK_API_KEY`
 
-Alternatively, create a `.env` file in your project directory:
+3. **Optional / Legacy Compatibility**
+   - `OPENROUTER_API_KEY` and `OPENROUTER_*` variables (only for OpenRouter-based invocations)
+
+Recommended setup:
 ```bash
-OPENROUTER_API_KEY=your_key_here
-ANTHROPIC_API_KEY=your_key_here
+cp .env.example .env
+# Then fill only the keys required by enabled profiles in configs/llm_routing.yaml
+```
+
+Or export manually:
+```bash
+export ANTHROPIC_API_KEY="your_key_here"
+# export OPENAI_API_KEY="your_key_here"
+# export GOOGLE_API_KEY="your_key_here"
+# export DASHSCOPE_API_KEY="your_key_here"
+# export DEEPSEEK_API_KEY="your_key_here"
 ```
 
 **Network Access Control** (Optional)
@@ -234,7 +250,8 @@ Each agent in the workflow has a specific responsibility:
 - **Plan Reviewer**: "Is this plan complete?" - Validates that plans address all requirements before execution begins
 - **Plan Parser**: Converts natural language plans into structured, executable stages with trackable success criteria
 - **Stage Orchestrator**: Manages the execution cycle - runs stages one at a time, validates progress, and adapts as needed
-- **Coding Agent**: Does the actual implementation work (powered by Claude Code SDK with access to 380+ scientific Skills)
+- **Execution Agent** (legacy route alias: `coding_agent`): Does the actual implementation work (executor routed per profile: `claude_code` / `codex` / `opencode`)
+  - Note: runtime fallback currently supports model fallback within the same executor only
 - **Review Agent**: "Was this done correctly?" - Validates implementations against requirements before proceeding
 - **Criteria Checker**: "What have we accomplished?" - Objectively tracks progress against success criteria after each stage
 - **Stage Reflector**: "What should we do next?" - Analyzes progress and adapts remaining stages based on what's been learned
@@ -265,7 +282,7 @@ Each agent in the workflow has a specific responsibility:
 ├──────────────────────────────────────────────────────────────┤
 │                     Tool Layer                               │
 │  • Built-in Tools: Read-only file ops, web fetch             │
-│  • Claude Scientific Skills: 120+ skills                     │
+│  • Scientific Skills: local skill instructions for coding     │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -273,16 +290,45 @@ Each agent in the workflow has a specific responsibility:
 
 ### Environment Variables
 
-Create a `.env` file:
+Create a `.env` file from the example:
 
 ```bash
-# Required: API keys
-ANTHROPIC_API_KEY=your_key_here
-GOOGLE_API_KEY=your_key_here
+cp .env.example .env
+```
 
-# Optional: Model configuration
-DEFAULT_MODEL=google/gemini-2.5-pro
-CODING_MODEL=claude-sonnet-4-5-20250929
+Key groups:
+
+```bash
+# Core required
+ANTHROPIC_API_KEY=your_key_here
+
+# Required only if the profile is enabled in configs/llm_routing.yaml
+# OPENAI_API_KEY=your_key_here
+# GOOGLE_API_KEY=your_key_here
+# DASHSCOPE_API_KEY=your_key_here
+# DEEPSEEK_API_KEY=your_key_here
+
+# Optional overrides
+# DEFAULT_MODEL=gemini-3.1-pro-preview
+# CODING_MODEL=claude-sonnet-4-6
+# REVIEW_MODEL=gemini-3.1-pro-preview
+# DEFAULT_CODING_EXECUTOR=claude_code
+# DIRECT_CODING_EXECUTOR=claude_code
+# LLM_ROUTING_CONFIG_PATH=configs/llm_routing.yaml
+# DISABLE_NETWORK_ACCESS=true
+# LLM_CIRCUIT_BREAKER_ENABLED=true
+# LLM_CIRCUIT_BREAKER_FAILURE_THRESHOLD=2
+# LLM_CIRCUIT_BREAKER_COOLDOWN_SECONDS=120
+# LLM_CIRCUIT_BREAKER_MAX_COOLDOWN_SECONDS=1800
+# ADS_HISTORY_ENABLED=true
+# ADS_HISTORY_DB_PATH=.agentic_ds_history.sqlite3
+# CODEX_COMMAND_TEMPLATE="codex exec --model {model}"
+# OPENCODE_COMMAND_TEMPLATE="opencode run --model {model}"
+```
+
+Optional startup validation:
+```bash
+agentic-data-scientist --llm-preflight --llm-config configs/llm_routing.yaml
 ```
 
 ### Tools & Skills
@@ -293,11 +339,11 @@ CODING_MODEL=claude-sonnet-4-5-20250929
 - **Web Operations**: HTTP fetch for retrieving web content
   - `fetch_url`
 
-**Claude Scientific Skills** (coding agent):
-- **120+ Scientific Skills** automatically loaded from [claude-scientific-skills](https://github.com/K-Dense-AI/claude-scientific-skills)
-  - Scientific databases: UniProt, PubChem, PDB, KEGG, PubMed, and more
-  - Scientific packages: BioPython, RDKit, PyDESeq2, scanpy, and more
-  - Auto-cloned to `.claude/skills/` at coding agent startup
+**Scientific Skills** (coding agent):
+- Skills repository is auto-bootstrapped to `.claude/skills/` (reused across coding executors)
+- Claude Code executor uses native skill loading from `.claude/skills/`
+- Codex/OpenCode executors are instructed to discover and apply `SKILL.md` files from local skill dirs
+- Source: [claude-scientific-skills](https://github.com/K-Dense-AI/claude-scientific-skills)
 
 All tools are sandboxed to the working directory for security.
 
@@ -414,7 +460,8 @@ agentic-data-scientist/
 │   │   │   ├── implementation_loop.py# Coding + review loop
 │   │   │   ├── loop_detection.py     # Loop detection agent
 │   │   │   └── review_confirmation.py# Review decision logic
-│   │   └── claude_code/# Claude Code integration
+│   │   ├── claude_code/# Claude Code integration
+│   │   └── coding_backends.py # coding executor routing (claude/codex/opencode)
 │   ├── prompts/        # Prompt templates
 │   │   ├── base/       # Agent role prompts
 │   │   └── domain/     # Domain-specific prompts
@@ -427,8 +474,8 @@ agentic-data-scientist/
 ## Requirements
 
 - Python 3.12+
-- Node.js (for Claude Code)
-- API keys for Anthropic and OpenRouter
+- One coding executor CLI: Claude Code, Codex, or OpenCode
+- Keys for enabled routed providers and selected coding executor
 
 ## Contributing
 

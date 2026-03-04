@@ -7,6 +7,7 @@ with optional conversation context and file handling.
 
 import asyncio
 import logging
+import os
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -27,6 +28,8 @@ from agentic_data_scientist.core.events import (
     UsageEvent,
     event_to_dict,
 )
+from agentic_data_scientist.core.history_store import create_history_store_from_env
+from agentic_data_scientist.core.state_contracts import StateKeys, build_initial_state_delta
 
 
 # Load environment variables
@@ -63,6 +66,7 @@ class Result:
 
     session_id: str
     status: str
+    run_id: Optional[str] = None
     response: Optional[str] = None
     error: Optional[str] = None
     files_created: List[str] = field(default_factory=list)
@@ -74,7 +78,7 @@ class DataScientist:
     """
     Simplified stateless API for Agentic Data Scientist agents.
 
-    This class provides a clean interface for running ADK or Claude Code agents
+    This class provides a clean interface for running ADK workflows or direct coding agents
     with optional conversation context and file handling.
 
     Parameters
@@ -131,10 +135,117 @@ class DataScientist:
         self.app = None  # Will store App instance for ADK agents
         self.session_service = None
         self.runner = None
+        self._history_store = create_history_store_from_env()
 
         logger.info(f"Initialized Agentic Data Scientist session: {self.session_id}")
         logger.info(f"Working directory: {self.working_dir}")
         logger.info(f"Auto-cleanup enabled: {self.auto_cleanup}")
+        if self._history_store is not None:
+            logger.info(f"History store enabled: {self._history_store.db_path}")
+
+    def _collect_decision_traces(self, state: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Collect compact decision traces from canonical state keys."""
+        decisions: List[Dict[str, Any]] = []
+        if not isinstance(state, dict):
+            return decisions
+
+        plan_decision = state.get(StateKeys.PLAN_REVIEW_CONFIRMATION_DECISION)
+        if plan_decision is not None:
+            reason = plan_decision.get("reason") if isinstance(plan_decision, dict) else ""
+            decisions.append(
+                {
+                    "role": "plan_review_confirmation",
+                    "decision_key": StateKeys.PLAN_REVIEW_CONFIRMATION_DECISION,
+                    "decision_value": plan_decision,
+                    "reason": reason,
+                    "source": "workflow_state",
+                }
+            )
+
+        impl_decision = state.get(StateKeys.IMPLEMENTATION_REVIEW_CONFIRMATION_DECISION)
+        if impl_decision is not None:
+            reason = impl_decision.get("reason") if isinstance(impl_decision, dict) else ""
+            decisions.append(
+                {
+                    "role": "implementation_review_confirmation",
+                    "decision_key": StateKeys.IMPLEMENTATION_REVIEW_CONFIRMATION_DECISION,
+                    "decision_value": impl_decision,
+                    "reason": reason,
+                    "source": "workflow_state",
+                }
+            )
+        return decisions
+
+    async def _persist_history(
+        self,
+        *,
+        run_id: Optional[str],
+        start_time: datetime,
+        status: str,
+        duration: float,
+        events_count: int,
+        files_created: List[str],
+        usage_totals: Dict[str, int],
+        error_text: Optional[str] = None,
+    ) -> None:
+        """Persist compact run/stage/decision history (best effort)."""
+        if self._history_store is None or not run_id:
+            return
+        if self.session_service is None:
+            return
+
+        try:
+            app_name = self.app.name if self.app else "agentic_data_scientist"
+            session = await self.session_service.get_session(
+                app_name=app_name,
+                user_id="default_user",
+                session_id=self.session_id,
+            )
+            state = session.state if session is not None else {}
+            if not isinstance(state, dict):
+                state = {}
+
+            self._history_store.record_run(
+                run_id=run_id,
+                session_id=self.session_id,
+                started_at=start_time.isoformat(timespec="seconds"),
+                finished_at=datetime.now().isoformat(timespec="seconds"),
+                status=status,
+                agent_type=self.config.agent_type,
+                duration_seconds=duration,
+                events_count=events_count,
+                files_count=len(files_created),
+                total_input_tokens=int(usage_totals.get("total_input_tokens", 0)),
+                cached_input_tokens=int(usage_totals.get("cached_input_tokens", 0)),
+                output_tokens=int(usage_totals.get("output_tokens", 0)),
+                error_text=error_text,
+                working_dir=str(self.working_dir),
+            )
+
+            stage_attempts = state.get(StateKeys.STAGE_IMPLEMENTATIONS, [])
+            if isinstance(stage_attempts, list):
+                stages = state.get(StateKeys.HIGH_LEVEL_STAGES, [])
+                stages_by_index: Dict[int, Dict[str, Any]] = {}
+                if isinstance(stages, list):
+                    for stage in stages:
+                        if not isinstance(stage, dict):
+                            continue
+                        try:
+                            stage_index = int(stage.get("index", -1))
+                        except Exception:
+                            continue
+                        stages_by_index[stage_index] = stage
+                self._history_store.record_stage_outcomes(
+                    run_id=run_id,
+                    stage_attempts=stage_attempts,
+                    stages_by_index=stages_by_index,
+                )
+
+            decisions = self._collect_decision_traces(state)
+            self._history_store.record_decision_traces(run_id=run_id, decisions=decisions)
+
+        except Exception as history_error:
+            logger.warning(f"Failed to persist history for run {run_id}: {history_error}")
 
     async def _setup_agent(self):
         """Set up the agent and session service."""
@@ -155,17 +266,29 @@ class DataScientist:
             self.agent = app.root_agent  # For compatibility
 
         elif self.config.agent_type == "claude_code":
-            from google.adk.agents import Agent
             from google.adk.apps import App
             from google.adk.apps.app import EventsCompactionConfig
 
-            from agentic_data_scientist.agents.claude_code import ClaudeCodeAgent
+            from agentic_data_scientist.agents.coding_backends import create_coding_agent
 
-            # Create claude code agent
-            claude_agent = ClaudeCodeAgent(
+            # Create direct coding agent (executor defaults to claude_code)
+            direct_executor = os.getenv("DIRECT_CODING_EXECUTOR", "claude_code")
+            coding_agent = create_coding_agent(
+                executor=direct_executor,
                 working_dir=str(self.working_dir),
+                name="direct_coding_agent",
+                description=(
+                    "Direct coding agent for simple mode. "
+                    f"Executor={direct_executor}"
+                ),
+                model=os.getenv("CODING_MODEL", "claude-sonnet-4-6"),
+                fallback_model=None,
+                fallback_max_retries=0,
+                routing_role="execution_agent",
+                primary_profile_name=os.getenv("CODING_MODEL", "claude-sonnet-4-6"),
+                output_key=StateKeys.IMPLEMENTATION_SUMMARY,
             )
-            self.agent = claude_agent
+            self.agent = coding_agent
 
             # Create App with compression config (no caching for claude_code)
             compression_config = EventsCompactionConfig(
@@ -175,8 +298,8 @@ class DataScientist:
             )
 
             self.app = App(
-                name="agentic-data-scientist-claude",
-                root_agent=claude_agent,
+                name="agentic-data-scientist-coding",
+                root_agent=coding_agent,
                 events_compaction_config=compression_config,
             )
         else:
@@ -317,6 +440,7 @@ class DataScientist:
             Result if stream=False, or AsyncGenerator if stream=True
         """
         start_time = datetime.now()
+        run_id = f"run_{start_time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
 
         try:
             # Set up agent if not already done
@@ -329,15 +453,11 @@ class DataScientist:
                 app_name=app_name, user_id="default_user", session_id=self.session_id
             )
 
-            # Set state variables (state is mutable, changes persist automatically)
-            session.state["original_user_input"] = message
-            session.state["latest_user_input"] = message
-            # For Claude Code agent, also set implementation_task
-            if self.config.agent_type == "claude_code":
-                session.state["implementation_task"] = message
-
-            logger.info(f"[API] Set session state keys: {list(session.state.keys())}")
-            logger.info(f"[API] implementation_task = {session.state.get('implementation_task', 'NOT SET')[:50]}...")
+            # Keep semantic separation:
+            # - original/latest_user_input: raw user message only
+            # - rendered_prompt: message enriched with file context/instructions
+            session.state[StateKeys.ORIGINAL_USER_INPUT] = message
+            session.state[StateKeys.LATEST_USER_INPUT] = message
 
             # Save files if provided
             file_info = self.save_files(files) if files else None
@@ -345,10 +465,20 @@ class DataScientist:
             # Prepare prompt
             full_prompt = self.prepare_prompt(message, file_info)
 
+            # Save rendered prompt after file metadata has been attached
+            session.state[StateKeys.RENDERED_PROMPT] = full_prompt
+            if self.config.agent_type == "claude_code":
+                session.state[StateKeys.IMPLEMENTATION_TASK] = full_prompt
+
+            logger.info(f"[API] Set session state keys: {list(session.state.keys())}")
+            logger.info(
+                f"[API] implementation_task = {session.state.get(StateKeys.IMPLEMENTATION_TASK, 'NOT SET')[:50]}..."
+            )
+
             if stream:
-                return self._stream_responses(full_prompt, start_time)
+                return self._stream_responses(message, full_prompt, start_time, run_id=run_id)
             else:
-                return await self._collect_responses(full_prompt, start_time)
+                return await self._collect_responses(message, full_prompt, start_time, run_id=run_id)
 
         except Exception as e:
             logger.error(f"Error in run_async: {e}", exc_info=True)
@@ -356,26 +486,37 @@ class DataScientist:
                 return Result(
                     session_id=self.session_id,
                     status="error",
+                    run_id=run_id,
                     error=str(e),
                     duration=(datetime.now() - start_time).total_seconds(),
                 )
             else:
                 raise
 
-    async def _stream_responses(self, prompt: str, start_time: datetime) -> AsyncGenerator[Dict[str, Any], None]:
+    async def _stream_responses(
+        self,
+        original_message: str,
+        prompt: str,
+        start_time: datetime,
+        run_id: Optional[str] = None,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
         """Stream responses from the agent."""
         event_count = 0
         message_event_number = 0
         responses = []
+        usage_totals = {
+            "total_input_tokens": 0,
+            "cached_input_tokens": 0,
+            "output_tokens": 0,
+        }
 
         try:
             # Pass initial state to runner via state_delta
-            initial_state = {
-                "original_user_input": prompt,
-                "latest_user_input": prompt,
-            }
-            if self.config.agent_type == "claude_code":
-                initial_state["implementation_task"] = prompt
+            initial_state = build_initial_state_delta(
+                original_message=original_message,
+                rendered_prompt=prompt,
+                agent_type=self.config.agent_type,
+            )
 
             async for event in self.runner.run_async(
                 user_id="default_user",
@@ -455,6 +596,9 @@ class DataScientist:
                             usage=usage_info, timestamp=datetime.now().strftime("%H:%M:%S.%f")[:-3]
                         )
                         yield event_to_dict(usage_event)
+                        usage_totals["total_input_tokens"] += int(usage_info.get("total_input_tokens") or 0)
+                        usage_totals["cached_input_tokens"] += int(usage_info.get("cached_input_tokens") or 0)
+                        usage_totals["output_tokens"] += int(usage_info.get("output_tokens") or 0)
 
             # Calculate duration
             duration = (datetime.now() - start_time).total_seconds()
@@ -478,26 +622,55 @@ class DataScientist:
                 files_count=len(files_created),
                 timestamp=datetime.now().strftime("%H:%M:%S.%f")[:-3],
             )
+            await self._persist_history(
+                run_id=run_id,
+                start_time=start_time,
+                status="completed",
+                duration=duration,
+                events_count=event_count,
+                files_created=files_created,
+                usage_totals=usage_totals,
+            )
             yield event_to_dict(completed_event)
 
         except Exception as e:
             logger.error(f"Error in stream: {e}", exc_info=True)
+            await self._persist_history(
+                run_id=run_id,
+                start_time=start_time,
+                status="error",
+                duration=(datetime.now() - start_time).total_seconds(),
+                events_count=event_count,
+                files_created=[],
+                usage_totals=usage_totals,
+                error_text=str(e),
+            )
             error_event = ErrorEvent(content=str(e), timestamp=datetime.now().strftime("%H:%M:%S.%f")[:-3])
             yield event_to_dict(error_event)
 
-    async def _collect_responses(self, prompt: str, start_time: datetime) -> Result:
+    async def _collect_responses(
+        self,
+        original_message: str,
+        prompt: str,
+        start_time: datetime,
+        run_id: Optional[str] = None,
+    ) -> Result:
         """Collect all responses and return a complete result."""
         responses = []
         event_count = 0
+        usage_totals = {
+            "total_input_tokens": 0,
+            "cached_input_tokens": 0,
+            "output_tokens": 0,
+        }
 
         try:
             # Pass initial state to runner via state_delta
-            initial_state = {
-                "original_user_input": prompt,
-                "latest_user_input": prompt,
-            }
-            if self.config.agent_type == "claude_code":
-                initial_state["implementation_task"] = prompt
+            initial_state = build_initial_state_delta(
+                original_message=original_message,
+                rendered_prompt=prompt,
+                agent_type=self.config.agent_type,
+            )
 
             async for event in self.runner.run_async(
                 user_id="default_user",
@@ -517,6 +690,13 @@ class DataScientist:
                                 prefix = f"[{author}]" if not is_thought else f"[{author} - THINKING]"
                                 responses.append(f"{prefix}: {part.text}")
 
+                if hasattr(event, 'usage_metadata') and event.usage_metadata:
+                    usage = event.usage_metadata
+                    if isinstance(usage, types.GenerateContentResponseUsageMetadata):
+                        usage_totals["total_input_tokens"] += int(usage.total_token_count or 0)
+                        usage_totals["cached_input_tokens"] += int(usage.cached_content_token_count or 0)
+                        usage_totals["output_tokens"] += int(usage.candidates_token_count or 0)
+
             # Calculate duration
             duration = (datetime.now() - start_time).total_seconds()
 
@@ -530,9 +710,19 @@ class DataScientist:
                             relative_path = file_path.relative_to(self.working_dir)
                             files_created.append(str(relative_path))
 
+            await self._persist_history(
+                run_id=run_id,
+                start_time=start_time,
+                status="completed",
+                duration=duration,
+                events_count=event_count,
+                files_created=files_created,
+                usage_totals=usage_totals,
+            )
             return Result(
                 session_id=self.session_id,
                 status="completed",
+                run_id=run_id,
                 response="\n".join(responses),
                 files_created=files_created,
                 duration=duration,
@@ -541,9 +731,20 @@ class DataScientist:
 
         except Exception as e:
             logger.error(f"Error collecting responses: {e}", exc_info=True)
+            await self._persist_history(
+                run_id=run_id,
+                start_time=start_time,
+                status="error",
+                duration=(datetime.now() - start_time).total_seconds(),
+                events_count=event_count,
+                files_created=[],
+                usage_totals=usage_totals,
+                error_text=str(e),
+            )
             return Result(
                 session_id=self.session_id,
                 status="error",
+                run_id=run_id,
                 error=str(e),
                 duration=(datetime.now() - start_time).total_seconds(),
             )

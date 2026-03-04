@@ -15,30 +15,65 @@ uvx agentic-data-scientist "your query here"
 ## Prerequisites
 
 - Python 3.12 or later
-- Node.js (for Claude Code)
+- At least one coding executor CLI:
+  - Claude Code (requires Node.js)
+  - Codex CLI (`codex`)
+  - OpenCode CLI (`opencode`)
 - API keys:
-  - `ANTHROPIC_API_KEY` for Claude (required)
-  - `OPENROUTER_API_KEY` for planning/review models (required)
+  - Key for your selected coding executor profile (for example `ANTHROPIC_API_KEY` for `claude_code`)
+  - Provider keys for any profiles enabled in `configs/llm_routing.yaml`
 
 ## Quick Start
 
 ### 1. Set up environment variables
 
-Create a `.env` file in your project root:
+Create a `.env` file from the template:
 
 ```bash
-# Required: API keys
+cp .env.example .env
+```
+
+Then fill required values:
+
+```bash
+# Core required (example for claude_code executor)
 ANTHROPIC_API_KEY=your_anthropic_key_here
-OPENROUTER_API_KEY=your_openrouter_key_here
+
+# Required only if enabled in configs/llm_routing.yaml
+# OPENAI_API_KEY=your_openai_key_here
+# GOOGLE_API_KEY=your_google_key_here
+# DASHSCOPE_API_KEY=your_dashscope_key_here
+# DEEPSEEK_API_KEY=your_deepseek_key_here
 
 # Optional: Model configuration
-DEFAULT_MODEL=google/gemini-2.5-pro
-CODING_MODEL=claude-sonnet-4-5-20250929
+# DEFAULT_MODEL=gemini-3.1-pro-preview
+# CODING_MODEL=claude-sonnet-4-6
+# REVIEW_MODEL=gemini-3.1-pro-preview
+# DEFAULT_CODING_EXECUTOR=claude_code
+# DIRECT_CODING_EXECUTOR=claude_code
+# LLM_ROUTING_CONFIG_PATH=configs/llm_routing.yaml
+# DISABLE_NETWORK_ACCESS=true
+# LLM_CIRCUIT_BREAKER_ENABLED=true
+# LLM_CIRCUIT_BREAKER_FAILURE_THRESHOLD=2
+# LLM_CIRCUIT_BREAKER_COOLDOWN_SECONDS=120
+# LLM_CIRCUIT_BREAKER_MAX_COOLDOWN_SECONDS=1800
+# ADS_HISTORY_ENABLED=true
+# ADS_HISTORY_DB_PATH=.agentic_ds_history.sqlite3
+# CODEX_COMMAND_TEMPLATE="codex exec --model {model}"
+# OPENCODE_COMMAND_TEMPLATE="opencode run --model {model}"
 ```
 
 Get your API keys:
-- OpenRouter: https://openrouter.ai/keys
 - Anthropic: https://console.anthropic.com/
+- OpenAI: https://platform.openai.com/api-keys
+- Google: https://aistudio.google.com/app/apikey
+- DashScope (Qwen): https://dashscope.console.aliyun.com/
+- DeepSeek: https://platform.deepseek.com/api_keys
+
+Optional startup check:
+```bash
+agentic-data-scientist --llm-preflight --llm-config configs/llm_routing.yaml
+```
 
 ### 2. Run your first query
 
@@ -340,10 +375,12 @@ See the `docs/` folder for additional guides on API usage, CLI options, customiz
 - Ensure your `.env` file is in the correct location
 - Verify API keys are valid and active
 - Check that keys have sufficient credits
+- Ensure keys exist for profiles enabled in `configs/llm_routing.yaml`
+- Run preflight: `agentic-data-scientist --llm-preflight --llm-config configs/llm_routing.yaml`
 
 **Node.js Issues**
 - Ensure Node.js is installed: `node --version`
-- Required for Claude Code agent
+- Required when your coding executor is `claude_code`
 - Restart terminal after installing Node.js
 
 **Workflow Seems Stuck**

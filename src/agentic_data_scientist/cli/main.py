@@ -13,6 +13,12 @@ from typing import Optional
 import click
 
 from agentic_data_scientist import DataScientist
+from agentic_data_scientist.core.llm_config import (
+    load_llm_routing_config,
+    validate_routing_config,
+    write_llm_config_template,
+)
+from agentic_data_scientist.core.llm_preflight import format_preflight_report, run_llm_preflight
 
 
 # Suppress third-party library console output early, before importing our modules
@@ -50,9 +56,9 @@ logger = logging.getLogger(__name__)
 )
 @click.option(
     '--mode',
-    required=True,
+    required=False,
     type=click.Choice(['orchestrated', 'simple']),
-    help='REQUIRED: Execution mode - "orchestrated" (full multi-agent with planning) or "simple" (direct coding)',
+    help='Execution mode - "orchestrated" (full multi-agent with planning) or "simple" (direct coding)',
 )
 @click.option(
     '--working-dir',
@@ -76,26 +82,46 @@ logger = logging.getLogger(__name__)
     type=click.Path(),
     help='Path to log file (default: .agentic_ds.log in working directory)',
 )
+@click.option(
+    '--llm-preflight',
+    is_flag=True,
+    help='Validate configured LLM profiles/routing and exit',
+)
+@click.option(
+    '--llm-config',
+    type=click.Path(),
+    default='configs/llm_routing.yaml',
+    show_default=True,
+    help='Path to LLM routing config YAML',
+)
+@click.option(
+    '--write-llm-template',
+    is_flag=True,
+    help='Write template LLM config to --llm-config path if it does not exist',
+)
 def main(
     query: Optional[str],
     files: tuple,
-    mode: str,
+    mode: Optional[str],
     working_dir: Optional[str],
     temp_dir: bool,
     keep_files: bool,
     verbose: bool,
     log_file: Optional[str],
+    llm_preflight: bool,
+    llm_config: str,
+    write_llm_template: bool,
 ):
     """
     Run Agentic Data Scientist with a query.
 
-    IMPORTANT: You must specify --mode to choose between orchestrated (with planning)
-    or simple (direct coding) execution. This ensures you're always aware of the
-    complexity and API cost of your analysis.
+    IMPORTANT: For normal execution, you must specify --mode to choose between
+    orchestrated (with planning) or simple (direct coding) execution.
+    Preflight mode (--llm-preflight) does not require --mode.
 
     MODE (REQUIRED):
-        orchestrated: Full multi-agent system with planning, verification, and Claude Code implementation
-        simple: Direct Claude Code execution without orchestration (faster, cheaper)
+        orchestrated: Full multi-agent system with planning, verification, and routed coding implementation
+        simple: Direct coding execution without orchestration (executor configurable)
 
     WORKING DIRECTORY:
         By default, creates ./agentic_output/ in your current directory and preserves files.
@@ -133,10 +159,56 @@ def main(
 
         Verbose logging:
             agentic-data-scientist "Debug issue" --mode simple --files data.csv --verbose
+
+        LLM preflight:
+            agentic-data-scientist --llm-preflight --llm-config configs/llm_routing.yaml
     """
     # Set logging level
     if verbose:
         logging.getLogger().setLevel(logging.DEBUG)
+
+    if llm_preflight:
+        config_path = Path(llm_config)
+        if write_llm_template and not config_path.exists():
+            created_path = write_llm_config_template(config_path)
+            click.echo(f"Created template config: {created_path}")
+
+        if not config_path.exists():
+            click.echo(
+                f"Error: LLM config not found: {config_path}. "
+                "Use --write-llm-template to create one.",
+                err=True,
+            )
+            sys.exit(1)
+
+        try:
+            routing_config = load_llm_routing_config(config_path)
+            errors, warnings = validate_routing_config(routing_config)
+        except Exception as e:
+            click.echo(f"Error loading LLM config: {e}", err=True)
+            sys.exit(1)
+
+        if errors:
+            click.echo("LLM config validation failed:", err=True)
+            for error in errors:
+                click.echo(f"- {error}", err=True)
+            sys.exit(1)
+
+        if warnings:
+            click.echo("LLM config warnings:")
+            for warning in warnings:
+                click.echo(f"- {warning}")
+            click.echo("")
+
+        report = run_llm_preflight(routing_config)
+        click.echo(format_preflight_report(report))
+        if report["overall_status"] == "unavailable":
+            sys.exit(1)
+        return
+
+    if not mode:
+        click.echo("Error: --mode is required unless --llm-preflight is used.", err=True)
+        sys.exit(1)
 
     # Get query from stdin if not provided
     if not query:

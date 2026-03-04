@@ -2,8 +2,14 @@
 
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
-from agentic_data_scientist.agents.claude_code.agent import ClaudeCodeAgent, setup_working_directory
+from agentic_data_scientist.agents.adk.loop_detection import LoopDetectionAgent
+from agentic_data_scientist.agents.claude_code.agent import (
+    ClaudeCodeAgent,
+    setup_skills_directory,
+    setup_working_directory,
+)
 
 
 class TestClaudeCodeAgent:
@@ -13,7 +19,7 @@ class TestClaudeCodeAgent:
         """Test ClaudeCodeAgent default initialization."""
         agent = ClaudeCodeAgent()
         assert agent.name == "claude_coding_agent"
-        assert agent.model == "claude-sonnet-4-5-20250929"
+        assert agent.model == "claude-sonnet-4-6"
         assert agent._output_key == "implementation_summary"
 
     def test_initialization_custom(self):
@@ -29,7 +35,7 @@ class TestClaudeCodeAgent:
             assert agent.description == "Custom description"
             assert agent._working_dir == tmpdir
             assert agent._output_key == "custom_output"
-            assert agent.model == "claude-sonnet-4-5-20250929"
+            assert agent.model == "claude-sonnet-4-6"
 
     def test_truncate_summary_short(self):
         """Test summary truncation with short text."""
@@ -45,6 +51,35 @@ class TestClaudeCodeAgent:
         truncated = agent._truncate_summary(long_text)
         assert len(truncated) <= 41000  # Should be around 40k + truncation message
         assert "middle section truncated" in truncated
+
+    def test_should_retry_with_fallback_true_for_model_errors(self):
+        """Fallback retry should trigger for model/provider-like failures."""
+        agent = ClaudeCodeAgent(model="primary-model", fallback_model="backup-model")
+        should_retry = agent._should_retry_with_fallback(Exception("Rate limit exceeded for model"))
+        assert should_retry is True
+
+    def test_should_retry_with_fallback_false_without_fallback(self):
+        """Fallback retry should not trigger if no fallback model configured."""
+        agent = ClaudeCodeAgent(model="primary-model")
+        should_retry = agent._should_retry_with_fallback(Exception("Rate limit exceeded"))
+        assert should_retry is False
+
+    def test_should_retry_with_fallback_false_when_retry_disabled(self):
+        """Fallback retry should not trigger when fallback_max_retries is 0."""
+        agent = ClaudeCodeAgent(
+            model="primary-model",
+            fallback_model="backup-model",
+            fallback_max_retries=0,
+        )
+        should_retry = agent._should_retry_with_fallback(Exception("Rate limit exceeded"))
+        assert should_retry is False
+
+    def test_should_retry_with_fallback_false_when_already_retrying(self):
+        """Fallback retry should not loop recursively."""
+        agent = ClaudeCodeAgent(model="primary-model", fallback_model="backup-model")
+        agent._fallback_retrying = True
+        should_retry = agent._should_retry_with_fallback(Exception("provider error"))
+        assert should_retry is False
 
 
 class TestSetupWorkingDirectory:
@@ -97,3 +132,81 @@ class TestSetupWorkingDirectory:
             # Should still have correct structure
             assert (working_dir / "user_data").exists()
             assert (working_dir / "pyproject.toml").exists()
+
+
+class TestSetupSkillsDirectory:
+    """Test setup_skills_directory performance guards."""
+
+    def test_reuses_existing_skills_without_clone(self):
+        """Skip remote clone when a local skills directory already exists."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            skills_dir = Path(tmpdir) / ".claude" / "skills" / "existing_skill"
+            skills_dir.mkdir(parents=True, exist_ok=True)
+
+            with patch("subprocess.run") as mock_run:
+                setup_skills_directory(tmpdir)
+                mock_run.assert_not_called()
+
+    def test_skips_clone_when_network_disabled(self, monkeypatch):
+        """Skip remote clone when network is disabled by environment."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            monkeypatch.setenv("DISABLE_NETWORK_ACCESS", "true")
+            with patch("subprocess.run") as mock_run:
+                setup_skills_directory(tmpdir)
+                mock_run.assert_not_called()
+
+
+class TestLoopDetectionAgentFallback:
+    """Test one-shot fallback retry trigger logic for LoopDetectionAgent."""
+
+    def test_should_retry_with_fallback_true_for_provider_errors(self):
+        """Fallback should trigger for provider/model-like failures."""
+        agent = LoopDetectionAgent(
+            name="loop_agent",
+            instruction="test",
+            model="primary-model",
+            fallback_model="backup-model",
+        )
+        should_retry = agent._should_retry_with_fallback(Exception("provider timeout while calling model"))
+        assert should_retry is True
+
+    def test_should_retry_with_fallback_false_without_fallback(self):
+        """Fallback retry should not trigger if fallback model is absent."""
+        agent = LoopDetectionAgent(name="loop_agent", instruction="test", model="primary-model")
+        should_retry = agent._should_retry_with_fallback(Exception("rate limit exceeded"))
+        assert should_retry is False
+
+    def test_should_retry_with_fallback_false_when_retry_disabled(self):
+        """Fallback retry should not trigger when fallback_max_retries is 0."""
+        agent = LoopDetectionAgent(
+            name="loop_agent",
+            instruction="test",
+            model="primary-model",
+            fallback_model="backup-model",
+            fallback_max_retries=0,
+        )
+        should_retry = agent._should_retry_with_fallback(Exception("provider timeout"))
+        assert should_retry is False
+
+    def test_should_retry_with_fallback_false_when_already_retrying(self):
+        """Fallback retry should remain single-shot to avoid loops."""
+        agent = LoopDetectionAgent(
+            name="loop_agent",
+            instruction="test",
+            model="primary-model",
+            fallback_model="backup-model",
+        )
+        agent._fallback_retrying = True
+        should_retry = agent._should_retry_with_fallback(Exception("provider error"))
+        assert should_retry is False
+
+    def test_should_retry_with_fallback_false_when_models_are_same(self):
+        """Fallback should not trigger when fallback resolves to same model identifier."""
+        agent = LoopDetectionAgent(
+            name="loop_agent",
+            instruction="test",
+            model="same-model",
+            fallback_model="same-model",
+        )
+        should_retry = agent._should_retry_with_fallback(Exception("model not found"))
+        assert should_retry is False

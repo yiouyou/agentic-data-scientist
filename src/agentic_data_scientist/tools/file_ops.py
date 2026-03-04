@@ -586,7 +586,8 @@ def search_files(
                 try:
                     # Return path relative to search directory
                     relative = file_path.relative_to(search_path)
-                    matches.append(str(relative))
+                    # Normalize separators for consistent cross-platform output.
+                    matches.append(relative.as_posix())
                 except ValueError:
                     continue
 

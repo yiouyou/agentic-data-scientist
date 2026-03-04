@@ -7,13 +7,18 @@ for repetitive patterns and stops generation when loops are detected.
 
 import logging
 import re
-from typing import AsyncGenerator, Dict, List, Optional, Tuple
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 from google.adk.agents import InvocationContext, LlmAgent
 from google.adk.events import Event
 from google.genai import types
 from pydantic import Field, PrivateAttr
 from typing_extensions import override
+
+from agentic_data_scientist.core.llm_circuit_breaker import (
+    get_llm_circuit_breaker,
+    is_retryable_llm_error,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -57,6 +62,23 @@ class LoopDetectionAgent(LlmAgent):
         ge=100,
         description="Size of the sliding content window to analyze for loops",
     )
+    fallback_model: Optional[Any] = Field(
+        default=None,
+        description="Optional fallback model used for one-shot retry on provider/model failures.",
+    )
+    fallback_max_retries: int = Field(
+        default=1,
+        ge=0,
+        description="Maximum fallback retries. Current execution path supports 0 (disabled) or 1 (enabled).",
+    )
+    routing_role: str = Field(
+        default="",
+        description="Routing role identifier for per-role circuit breaker state.",
+    )
+    primary_profile_name: str = Field(
+        default="",
+        description="Primary profile identifier for per-role circuit breaker state.",
+    )
 
     # Internal state (private attrs are excluded from Pydantic field validation)
     _content_buffer: str = PrivateAttr(default="")
@@ -65,6 +87,8 @@ class LoopDetectionAgent(LlmAgent):
     _last_patterns: List[str] = PrivateAttr(default_factory=list)
     _event_count: int = PrivateAttr(default=0)
     _partial_buffer: str = PrivateAttr(default="")
+    _fallback_retrying: bool = PrivateAttr(default=False)
+    _primary_model: Optional[Any] = PrivateAttr(default=None)
 
     def _reset_detection_state(self):
         """Reset the loop detection state for a new invocation."""
@@ -74,6 +98,60 @@ class LoopDetectionAgent(LlmAgent):
         self._last_patterns = []
         self._event_count = 0
         self._partial_buffer = ""
+
+    def _model_label(self, model: Any) -> str:
+        """Return a stable, human-readable model label for logs and comparisons."""
+        return str(getattr(model, "model", model))
+
+    def _primary_identity(self, primary_model: Any) -> str:
+        """Return stable primary identity for circuit breaker keys."""
+        return self.primary_profile_name or self._model_label(primary_model)
+
+    def _prepare_model_for_invocation(self) -> Tuple[Any, bool]:
+        """
+        Prepare model selection at invocation start.
+
+        Returns
+        -------
+        Tuple[Any, bool]
+            (`primary_model`, `forced_fallback`) where forced_fallback indicates
+            this invocation bypassed the primary due an open circuit.
+        """
+        if self._primary_model is None:
+            self._primary_model = self.model
+
+        # If we're already in explicit fallback retry, keep current fallback model.
+        if self._fallback_retrying:
+            return self._primary_model, True
+
+        primary_model = self._primary_model
+        self.model = primary_model
+
+        if (
+            self.fallback_max_retries > 0
+            and self.fallback_model is not None
+            and self.routing_role
+            and get_llm_circuit_breaker().should_force_fallback(
+                self.routing_role,
+                self._primary_identity(primary_model),
+            )
+        ):
+            self.model = self.fallback_model
+            return primary_model, True
+
+        return primary_model, False
+
+    def _should_retry_with_fallback(self, error: Exception) -> bool:
+        """Return whether current error should trigger one fallback retry."""
+        if self.fallback_max_retries <= 0:
+            return False
+        if self.fallback_model is None:
+            return False
+        if self._fallback_retrying:
+            return False
+        if self._model_label(self.fallback_model) == self._model_label(self.model):
+            return False
+        return is_retryable_llm_error(error)
 
     def _maybe_save_output_to_state(self, event: Event) -> None:
         """
@@ -200,6 +278,10 @@ class LoopDetectionAgent(LlmAgent):
         """
         # Reset detection state for new invocation
         self._reset_detection_state()
+        primary_model, forced_fallback = self._prepare_model_for_invocation()
+        primary_identity = self._primary_identity(primary_model)
+        had_exception = False
+        retryable_primary_failure = False
 
         # Track if we're in streaming mode
         is_streaming = False
@@ -290,36 +372,98 @@ class LoopDetectionAgent(LlmAgent):
                     if len(self._content_buffer) > self.window_size:
                         self._content_buffer = self._content_buffer[-self.window_size :]
         except Exception as e:
+            had_exception = True
             is_unknown_tool, missing_tool = self._parse_unknown_tool_error(e)
-            if not is_unknown_tool:
-                raise
+            if (
+                not forced_fallback
+                and self.routing_role
+                and is_retryable_llm_error(e)
+            ):
+                retryable_primary_failure = True
+                get_llm_circuit_breaker().record_retryable_failure(
+                    role=self.routing_role,
+                    profile=primary_identity,
+                    error=e,
+                )
 
-            # Try to list allowed tool names for helpful guidance
-            allowed_names: List[str] = []
-            try:
-                tools = await self.canonical_tools(ctx)
-                allowed_names = [getattr(t, 'name', '') for t in tools if getattr(t, 'name', '')]
-            except Exception:
-                allowed_names = []
+            if is_unknown_tool:
+                # Try to list allowed tool names for helpful guidance
+                allowed_names: List[str] = []
+                try:
+                    tools = await self.canonical_tools(ctx)
+                    allowed_names = [getattr(t, 'name', '') for t in tools if getattr(t, 'name', '')]
+                except Exception:
+                    allowed_names = []
 
-            allowed_str = ", ".join(allowed_names) if allowed_names else "(none)"
-            msg = (
-                f"[TOOL NOT FOUND] The tool '{missing_tool}' is not available.\n"
-                f"Allowed tools: {allowed_str}.\n"
-                "Do not invent tool names. Choose a valid tool or proceed without tools."
-            )
-            warning_event = Event(
-                author=self.name,
-                content=types.Content(
-                    role="model",
-                    parts=[types.Part(text=msg)],
-                ),
-                partial=False,
-                turn_complete=True,
-            )
-            self._maybe_save_output_to_state(warning_event)
-            yield warning_event
-            return
+                allowed_str = ", ".join(allowed_names) if allowed_names else "(none)"
+                msg = (
+                    f"[TOOL NOT FOUND] The tool '{missing_tool}' is not available.\n"
+                    f"Allowed tools: {allowed_str}.\n"
+                    "Do not invent tool names. Choose a valid tool or proceed without tools."
+                )
+                warning_event = Event(
+                    author=self.name,
+                    content=types.Content(
+                        role="model",
+                        parts=[types.Part(text=msg)],
+                    ),
+                    partial=False,
+                    turn_complete=True,
+                )
+                self._maybe_save_output_to_state(warning_event)
+                yield warning_event
+                return
+
+            if self._should_retry_with_fallback(e):
+                current_model = self.model
+                fallback_model = self.fallback_model
+                current_label = self._model_label(current_model)
+                fallback_label = self._model_label(fallback_model)
+                logger.warning(
+                    f"[{self.name}] Primary model failed ({current_label}). "
+                    f"Retrying once with fallback model {fallback_label}. Error: {e}"
+                )
+
+                self._fallback_retrying = True
+                self.model = fallback_model
+                try:
+                    yield Event(
+                        author=self.name,
+                        content=types.Content(
+                            role="model",
+                            parts=[
+                                types.Part(
+                                    text=(
+                                        f"Primary model failed ({current_label}). "
+                                        f"Retrying with fallback model ({fallback_label})..."
+                                    )
+                                )
+                            ],
+                        ),
+                    )
+                    async for fallback_event in self._run_async_impl(ctx):
+                        yield fallback_event
+                    return
+                finally:
+                    self.model = current_model
+                    self._fallback_retrying = False
+
+            raise
+        finally:
+            if self._primary_model is not None and not self._fallback_retrying:
+                self.model = self._primary_model
+            if (
+                self.routing_role
+                and not forced_fallback
+                and not had_exception
+                and not retryable_primary_failure
+                and not self._loop_detected
+                and not self._fallback_retrying
+            ):
+                get_llm_circuit_breaker().record_success(
+                    role=self.routing_role,
+                    profile=primary_identity,
+                )
 
     @override
     async def _run_live_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
@@ -332,6 +476,10 @@ class LoopDetectionAgent(LlmAgent):
         """
         # Reset detection state for new invocation
         self._reset_detection_state()
+        primary_model, forced_fallback = self._prepare_model_for_invocation()
+        primary_identity = self._primary_identity(primary_model)
+        had_exception = False
+        retryable_primary_failure = False
 
         try:
             async for event in self._llm_flow.run_live(ctx):
@@ -392,31 +540,93 @@ class LoopDetectionAgent(LlmAgent):
                 if ctx.end_invocation:
                     return
         except Exception as e:
+            had_exception = True
             is_unknown_tool, missing_tool = self._parse_unknown_tool_error(e)
-            if not is_unknown_tool:
-                raise
+            if (
+                not forced_fallback
+                and self.routing_role
+                and is_retryable_llm_error(e)
+            ):
+                retryable_primary_failure = True
+                get_llm_circuit_breaker().record_retryable_failure(
+                    role=self.routing_role,
+                    profile=primary_identity,
+                    error=e,
+                )
 
-            allowed_names: List[str] = []
-            try:
-                tools = await self.canonical_tools(ctx)
-                allowed_names = [getattr(t, 'name', '') for t in tools if getattr(t, 'name', '')]
-            except Exception:
-                allowed_names = []
+            if is_unknown_tool:
+                allowed_names: List[str] = []
+                try:
+                    tools = await self.canonical_tools(ctx)
+                    allowed_names = [getattr(t, 'name', '') for t in tools if getattr(t, 'name', '')]
+                except Exception:
+                    allowed_names = []
 
-            allowed_str = ", ".join(allowed_names) if allowed_names else "(none)"
-            msg = (
-                f"[TOOL NOT FOUND] The tool '{missing_tool}' is not available.\n"
-                f"Allowed tools: {allowed_str}.\n"
-                "Do not invent tool names. Choose a valid tool or proceed without tools."
-            )
-            warning_event = Event(
-                author=self.name,
-                content=types.Content(
-                    role="model",
-                    parts=[types.Part(text=msg)],
-                ),
-                turn_complete=True,
-            )
-            self._maybe_save_output_to_state(warning_event)
-            yield warning_event
-            return
+                allowed_str = ", ".join(allowed_names) if allowed_names else "(none)"
+                msg = (
+                    f"[TOOL NOT FOUND] The tool '{missing_tool}' is not available.\n"
+                    f"Allowed tools: {allowed_str}.\n"
+                    "Do not invent tool names. Choose a valid tool or proceed without tools."
+                )
+                warning_event = Event(
+                    author=self.name,
+                    content=types.Content(
+                        role="model",
+                        parts=[types.Part(text=msg)],
+                    ),
+                    turn_complete=True,
+                )
+                self._maybe_save_output_to_state(warning_event)
+                yield warning_event
+                return
+
+            if self._should_retry_with_fallback(e):
+                current_model = self.model
+                fallback_model = self.fallback_model
+                current_label = self._model_label(current_model)
+                fallback_label = self._model_label(fallback_model)
+                logger.warning(
+                    f"[{self.name}] Primary model failed ({current_label}) in live mode. "
+                    f"Retrying once with fallback model {fallback_label}. Error: {e}"
+                )
+
+                self._fallback_retrying = True
+                self.model = fallback_model
+                try:
+                    yield Event(
+                        author=self.name,
+                        content=types.Content(
+                            role="model",
+                            parts=[
+                                types.Part(
+                                    text=(
+                                        f"Primary model failed ({current_label}). "
+                                        f"Retrying with fallback model ({fallback_label})..."
+                                    )
+                                )
+                            ],
+                        ),
+                    )
+                    async for fallback_event in self._run_live_impl(ctx):
+                        yield fallback_event
+                    return
+                finally:
+                    self.model = current_model
+                    self._fallback_retrying = False
+
+            raise
+        finally:
+            if self._primary_model is not None and not self._fallback_retrying:
+                self.model = self._primary_model
+            if (
+                self.routing_role
+                and not forced_fallback
+                and not had_exception
+                and not retryable_primary_failure
+                and not self._loop_detected
+                and not self._fallback_retrying
+            ):
+                get_llm_circuit_breaker().record_success(
+                    role=self.routing_role,
+                    profile=primary_identity,
+                )

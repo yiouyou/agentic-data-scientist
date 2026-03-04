@@ -10,6 +10,7 @@ from agentic_data_scientist.core.events import (
     UsageEvent,
     event_to_dict,
 )
+from agentic_data_scientist.core.history_store import HistoryStore, create_history_store_from_env
 
 
 __all__ = [
@@ -24,4 +25,6 @@ __all__ = [
     "ErrorEvent",
     "UsageEvent",
     "event_to_dict",
+    "HistoryStore",
+    "create_history_store_from_env",
 ]

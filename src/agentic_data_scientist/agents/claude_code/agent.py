@@ -22,6 +22,11 @@ from agentic_data_scientist.agents.claude_code.templates import (
     get_claude_instructions,
     get_minimal_pyproject,
 )
+from agentic_data_scientist.core.llm_circuit_breaker import (
+    get_llm_circuit_breaker,
+    is_retryable_llm_error,
+)
+from agentic_data_scientist.core.state_contracts import StateKeys
 
 
 try:
@@ -43,6 +48,11 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 
+def _has_local_skills(skills_dir: Path) -> bool:
+    """Return True if at least one skill directory already exists."""
+    return any(entry.is_dir() for entry in skills_dir.iterdir())
+
+
 def setup_skills_directory(working_dir: str) -> None:
     """
     Clone claude-scientific-skills repository and copy skills to .claude/skills/.
@@ -61,6 +71,16 @@ def setup_skills_directory(working_dir: str) -> None:
     working_path = Path(working_dir)
     skills_dir = working_path / ".claude" / "skills"
     skills_dir.mkdir(parents=True, exist_ok=True)
+
+    # Fast path: reuse already installed skills.
+    if _has_local_skills(skills_dir):
+        logger.info(f"[Claude Code] Reusing existing skills in {skills_dir}")
+        return
+
+    # Respect network-off mode: skip remote skill bootstrap.
+    if is_network_disabled():
+        logger.info("[Claude Code] Network disabled - skipping scientific skills bootstrap")
+        return
 
     # Clone repo to temp directory
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -161,12 +181,23 @@ class ClaudeCodeAgent(Agent):
     # Define working_dir and output_key as instance variables
     _working_dir: Optional[str] = None
     _output_key: str = "implementation_summary"
+    _fallback_model: Optional[str] = None
+    _fallback_max_retries: int = 1
+    _fallback_retrying: bool = False
+    _routing_role: Optional[str] = None
+    _primary_profile_name: Optional[str] = None
+    _primary_model: Optional[str] = None
 
     def __init__(
         self,
         name: str = "claude_coding_agent",
         description: Optional[str] = None,
         working_dir: Optional[str] = None,
+        model: Optional[str] = None,
+        fallback_model: Optional[str] = None,
+        fallback_max_retries: int = 1,
+        routing_role: Optional[str] = None,
+        primary_profile_name: Optional[str] = None,
         output_key: str = "implementation_summary",
         after_agent_callback: Optional[Any] = None,
         **kwargs: Any,
@@ -182,6 +213,16 @@ class ClaudeCodeAgent(Agent):
             Human-readable description for the agent.
         working_dir : str, optional
             Working directory for the agent
+        model : str, optional
+            Primary model override. If not provided, uses `CODING_MODEL` env var.
+        fallback_model : str, optional
+            Optional backup model (reserved for retry routing).
+        fallback_max_retries : int, optional
+            Maximum fallback retries. Current execution path supports 0 (disabled) or 1 (enabled).
+        routing_role : str, optional
+            Routing role identifier for per-role circuit breaker state.
+        primary_profile_name : str, optional
+            Primary profile identifier for per-role circuit breaker state.
         output_key : str
             State key where the final implementation summary will be stored.
         after_agent_callback : callable, optional
@@ -195,17 +236,22 @@ class ClaudeCodeAgent(Agent):
         Instructions are provided to Claude to avoid reading large files directly.
         """
         # Get model from environment variable
-        model = os.getenv("CODING_MODEL", "claude-sonnet-4-5-20250929")
+        resolved_model = model or os.getenv("CODING_MODEL", "claude-sonnet-4-6")
         # Pass model to parent Agent class (it has a model field)
         super().__init__(
             name=name,
             description=description or "A coding agent that uses Claude Agent SDK to implement plans",
-            model=model,
+            model=resolved_model,
             after_agent_callback=after_agent_callback,
             **kwargs,
         )
         self._working_dir = working_dir
         self._output_key = output_key
+        self._fallback_model = fallback_model
+        self._fallback_max_retries = max(0, int(fallback_max_retries))
+        self._routing_role = routing_role
+        self._primary_profile_name = primary_profile_name
+        self._primary_model = str(resolved_model)
 
     @property
     def working_dir(self) -> Optional[str]:
@@ -247,8 +293,41 @@ class ClaudeCodeAgent(Agent):
         )
         return truncated
 
+    def _should_retry_with_fallback(self, error: Exception) -> bool:
+        """Return whether the current error should trigger one fallback retry."""
+        if self._fallback_max_retries <= 0:
+            return False
+        if not self._fallback_model:
+            return False
+        if self._fallback_retrying:
+            return False
+        if self._fallback_model == self.model:
+            return False
+        return is_retryable_llm_error(error)
+
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
         """Execute Claude Agent with the implementation plan."""
+        state = ctx.session.state
+        primary_model = self._primary_model or str(self.model)
+        primary_identity = self._primary_profile_name or primary_model
+        forced_fallback = False
+        had_exception = False
+        retryable_primary_failure = False
+
+        # If we're already in explicit fallback retry, keep the fallback model.
+        if self._fallback_retrying:
+            forced_fallback = True
+        else:
+            self.model = primary_model
+            if (
+                self._routing_role
+                and self._fallback_model
+                and self._fallback_max_retries > 0
+                and get_llm_circuit_breaker().should_force_fallback(self._routing_role, primary_identity)
+            ):
+                self.model = str(self._fallback_model)
+                forced_fallback = True
+
         try:
             # Get working directory
             working_dir = self._working_dir
@@ -257,9 +336,7 @@ class ClaudeCodeAgent(Agent):
 
                 working_dir = tempfile.mkdtemp(prefix="claude_session_")
 
-            # Get state
-            state = ctx.session.state
-            current_stage = state.get("current_stage")
+            current_stage = state.get(StateKeys.CURRENT_STAGE)
 
             # Format stage information for the prompt
             if current_stage:
@@ -286,17 +363,17 @@ class ClaudeCodeAgent(Agent):
                 prompt = get_claude_context(
                     implementation_plan=stage_info,
                     working_dir=working_dir,
-                    original_request=state.get("original_user_input", ""),
-                    completed_stages=state.get("stage_implementations", []),
-                    all_stages=state.get("high_level_stages", []),
+                    original_request=state.get(StateKeys.ORIGINAL_USER_INPUT, ""),
+                    completed_stages=state.get(StateKeys.STAGE_IMPLEMENTATIONS, []),
+                    all_stages=state.get(StateKeys.HIGH_LEVEL_STAGES, []),
                 )
             else:
                 # Fallback: Try multiple state keys to find the task
                 task_prompt = (
-                    state.get("implementation_task", "")
-                    or state.get("original_user_input", "")
-                    or state.get("latest_user_input", "")
-                    or state.get("user_message", "")
+                    state.get(StateKeys.IMPLEMENTATION_TASK, "")
+                    or state.get(StateKeys.ORIGINAL_USER_INPUT, "")
+                    or state.get(StateKeys.LATEST_USER_INPUT, "")
+                    or state.get(StateKeys.USER_MESSAGE, "")
                 )
 
                 # Also check if there's a message in the context's initial message
@@ -639,6 +716,51 @@ Requirements:
                     raise
 
         except Exception as e:
+            had_exception = True
+            if (
+                not forced_fallback
+                and self._routing_role
+                and is_retryable_llm_error(e)
+            ):
+                retryable_primary_failure = True
+                get_llm_circuit_breaker().record_retryable_failure(
+                    role=self._routing_role,
+                    profile=primary_identity,
+                    error=e,
+                )
+
+            if self._should_retry_with_fallback(e):
+                current_model = str(self.model)
+                fallback_model = str(self._fallback_model)
+                logger.warning(
+                    f"[Claude Code] [{self.name}] Primary model failed ({current_model}). "
+                    f"Retrying once with fallback model {fallback_model}. Error: {e}"
+                )
+
+                self._fallback_retrying = True
+                self.model = fallback_model
+                try:
+                    yield Event(
+                        author=self.name,
+                        content=types.Content(
+                            role="model",
+                            parts=[
+                                types.Part.from_text(
+                                    text=(
+                                        f"Primary coding model failed ({current_model}). "
+                                        f"Retrying with fallback model ({fallback_model})..."
+                                    )
+                                )
+                            ],
+                        ),
+                    )
+                    async for fallback_event in self._run_async_impl(ctx):
+                        yield fallback_event
+                    return
+                finally:
+                    self.model = current_model
+                    self._fallback_retrying = False
+
             # Generic exception handler for all other errors
             logger.error(f"[Claude Code] [{self.name}] Error in Claude Agent: {e}", exc_info=True)
             state[self._output_key] = self._truncate_summary(f"Error: {str(e)}")
@@ -646,3 +768,17 @@ Requirements:
                 author=self.name,
                 content=types.Content(role="model", parts=[types.Part.from_text(text=f"Error: {str(e)}")]),
             )
+        finally:
+            if not self._fallback_retrying:
+                self.model = primary_model
+            if (
+                self._routing_role
+                and not forced_fallback
+                and not had_exception
+                and not retryable_primary_failure
+                and not self._fallback_retrying
+            ):
+                get_llm_circuit_breaker().record_success(
+                    role=self._routing_role,
+                    profile=primary_identity,
+                )

@@ -1,10 +1,16 @@
 """Unit tests for core API."""
 
+import sqlite3
+import uuid
+from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from agentic_data_scientist.core.api import DataScientist, FileInfo, Result, SessionConfig
+from agentic_data_scientist.core.history_store import HistoryStore
+from agentic_data_scientist.core.state_contracts import StateKeys
 
 
 class TestSessionConfig:
@@ -147,3 +153,94 @@ class TestDataScientist:
             assert ds.working_dir.exists()
 
         # Cleanup should have been called
+
+    @pytest.mark.asyncio
+    async def test_collect_responses_preserves_original_input_state(self):
+        """_collect_responses should pass raw user input separately from rendered prompt."""
+
+        class DummyRunner:
+            def __init__(self):
+                self.last_state_delta = None
+
+            async def run_async(self, user_id, session_id, new_message, state_delta):
+                self.last_state_delta = state_delta
+                if False:
+                    yield None
+
+        ds = DataScientist(agent_type="adk")
+        ds.working_dir = Path(".test_core_api_workdir")
+        ds.working_dir.mkdir(parents=True, exist_ok=True)
+        ds.runner = DummyRunner()
+
+        await ds._collect_responses("raw user request", "rendered prompt with file context", datetime.now())
+
+        assert ds.runner.last_state_delta[StateKeys.ORIGINAL_USER_INPUT] == "raw user request"
+        assert ds.runner.last_state_delta[StateKeys.LATEST_USER_INPUT] == "raw user request"
+        assert ds.runner.last_state_delta[StateKeys.RENDERED_PROMPT] == "rendered prompt with file context"
+        ds.cleanup()
+
+    @pytest.mark.asyncio
+    async def test_collect_responses_persists_history_rows(self, tmp_working_dir):
+        """_collect_responses should persist compact history records when store is enabled."""
+
+        class DummyRunner:
+            async def run_async(self, user_id, session_id, new_message, state_delta):
+                del user_id, session_id, new_message, state_delta
+                if False:
+                    yield None
+
+        class DummySessionService:
+            async def get_session(self, app_name, user_id, session_id):
+                del app_name, user_id, session_id
+                return SimpleNamespace(
+                    state={
+                        StateKeys.HIGH_LEVEL_STAGES: [
+                            {
+                                "index": 0,
+                                "stage_id": "s1",
+                                "title": "Stage 1",
+                                "status": "approved",
+                                "execution_mode": "workflow",
+                                "workflow_id": "demo.workflow",
+                            }
+                        ],
+                        StateKeys.STAGE_IMPLEMENTATIONS: [
+                            {
+                                "stage_index": 0,
+                                "attempt": 1,
+                                "approved": True,
+                                "implementation_summary": "ok",
+                                "review_reason": "approved",
+                            }
+                        ],
+                        StateKeys.IMPLEMENTATION_REVIEW_CONFIRMATION_DECISION: {
+                            "exit": True,
+                            "reason": "approved",
+                        },
+                    }
+                )
+
+        ds = DataScientist(agent_type="adk")
+        ds.working_dir = tmp_working_dir
+        ds.runner = DummyRunner()
+        ds.session_service = DummySessionService()
+        ds.app = SimpleNamespace(name="agentic-data-scientist")
+        db_path = Path.cwd() / f".history_test_api_{uuid.uuid4().hex}.sqlite3"
+        ds._history_store = HistoryStore(db_path)
+
+        result = await ds._collect_responses("raw", "prompt", datetime.now(), run_id="run_test_001")
+        assert result.status == "completed"
+        assert result.run_id == "run_test_001"
+
+        conn = sqlite3.connect(db_path)
+        try:
+            run_count = conn.execute("SELECT COUNT(*) FROM run_summary WHERE run_id='run_test_001'").fetchone()[0]
+            stage_count = conn.execute("SELECT COUNT(*) FROM stage_outcome WHERE run_id='run_test_001'").fetchone()[0]
+            decision_count = conn.execute("SELECT COUNT(*) FROM decision_trace WHERE run_id='run_test_001'").fetchone()[0]
+        finally:
+            conn.close()
+
+        assert run_count == 1
+        assert stage_count == 1
+        assert decision_count == 1
+        ds.cleanup()

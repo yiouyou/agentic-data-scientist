@@ -7,7 +7,6 @@ import pytest
 from agentic_data_scientist.agents.claude_code import ClaudeCodeAgent
 
 
-@pytest.mark.asyncio
 @pytest.mark.integration
 class TestClaudeCodeIntegration:
     """Test Claude Code agent integration."""
@@ -22,10 +21,11 @@ class TestClaudeCodeIntegration:
             )
 
             assert agent.working_dir == tmpdir
-            assert agent.model == "claude-sonnet-4-5-20250929"
+            assert agent.model == "claude-sonnet-4-6"
 
     @patch('agentic_data_scientist.agents.claude_code.agent.query')
     @patch('agentic_data_scientist.agents.claude_code.agent.ClaudeAgentOptions')
+    @pytest.mark.asyncio
     async def test_claude_agent_options_called(self, mock_options_class, mock_query):
         """Test that ClaudeAgentOptions is properly configured."""
         import tempfile

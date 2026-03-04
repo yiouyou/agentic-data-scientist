@@ -35,7 +35,9 @@ def load_prompt(name: str, domain: Optional[str] = None) -> str:
     if not prompt_path.exists():
         raise FileNotFoundError(f"Prompt not found: {prompt_path}")
 
-    return prompt_path.read_text()
+    # Prompt files are UTF-8 source assets. Using explicit UTF-8 prevents
+    # locale-dependent decoding failures on Windows (e.g., GBK default codec).
+    return prompt_path.read_text(encoding="utf-8")
 
 
 __all__ = ["load_prompt"]

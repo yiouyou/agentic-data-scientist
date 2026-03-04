@@ -7,6 +7,7 @@ of normal text output and does not have access to any tools.
 """
 
 import logging
+from typing import Any, Optional
 
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.planners import BuiltInPlanner
@@ -15,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from agentic_data_scientist.agents.adk.loop_detection import LoopDetectionAgent
 from agentic_data_scientist.agents.adk.utils import REVIEW_MODEL, get_generate_content_config
+from agentic_data_scientist.core.state_contracts import review_confirmation_decision_key
 from agentic_data_scientist.prompts import load_prompt
 
 
@@ -148,6 +150,11 @@ REVIEW_CONFIRMATION_OUTPUT_SCHEMA = ReviewConfirmationOutput
 def create_review_confirmation_agent(
     auto_exit_on_completion: bool = False,
     prompt_name: str = "plan_review_confirmation",
+    model: Any = REVIEW_MODEL,
+    fallback_model: Optional[Any] = None,
+    fallback_max_retries: int = 1,
+    routing_role: str = "",
+    primary_profile_name: str = "",
 ) -> LoopDetectionAgent:
     """
     Create a review confirmation agent with structured output.
@@ -168,6 +175,16 @@ def create_review_confirmation_agent(
     prompt_name : str, optional
         Name of the prompt file to load (default: "plan_review_confirmation").
         This is also used to generate a unique state key for this agent instance.
+    model : Any, optional
+        Model instance or model identifier to use for this confirmation agent.
+    fallback_model : Any, optional
+        Optional fallback model instance/identifier used for one-shot retry.
+    fallback_max_retries : int, optional
+        Maximum fallback retries. Current execution path supports 0 (disabled) or 1 (enabled).
+    routing_role : str, optional
+        Routing role identifier for per-role circuit breaker state.
+    primary_profile_name : str, optional
+        Primary profile identifier for per-role circuit breaker state.
 
     Returns
     -------
@@ -201,7 +218,7 @@ def create_review_confirmation_agent(
     instruction = load_prompt(prompt_name)
 
     # Create unique state key per agent instance to prevent cross-contamination
-    state_key = f"{prompt_name}_decision"
+    state_key = review_confirmation_decision_key(prompt_name)
     logger.debug(f"[AgenticDS] Using state key: {state_key}")
 
     # Create agent-specific callbacks using factory functions
@@ -211,7 +228,11 @@ def create_review_confirmation_agent(
 
     agent = LoopDetectionAgent(
         name=f"{prompt_name}_agent",
-        model=REVIEW_MODEL,
+        model=model,
+        fallback_model=fallback_model,
+        fallback_max_retries=max(0, int(fallback_max_retries)),
+        routing_role=routing_role,
+        primary_profile_name=primary_profile_name,
         description="Determines whether to exit the review loop based on implementation status.",
         instruction=instruction,
         tools=[],  # No tools - structured output only

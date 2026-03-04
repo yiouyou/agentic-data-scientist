@@ -1,0 +1,57 @@
+apiVersion: ads.workflow/v1
+kind: WorkflowManifest
+
+metadata:
+  id: demo.smoke.local_args
+  name: Local Smoke Args Workflow
+  domain: general
+  version: 1.0.0
+  tags: [smoke, local, routing, args]
+
+executor:
+  type: local_cli
+  adapter: shell
+  profile: local
+
+spec:
+  entrypoint:
+    command: >-
+      python -c "from pathlib import Path; Path('results').mkdir(exist_ok=True);
+      Path('results/args_report.txt').write_text('sample={inputs.sample_id}|threshold={params.threshold}', encoding='utf-8');
+      print('sample={inputs.sample_id}|threshold={params.threshold}')"
+    shell: true
+  inputs:
+    - name: sample_id
+      type: string
+      required: true
+      description: Demo sample identifier for passthrough test
+  params:
+    - name: threshold
+      type: number
+      required: true
+      description: Demo numeric parameter for passthrough test
+  outputs:
+    - name: args_report
+      type: file
+      path: results/args_report.txt
+      description: Report proving inputs/params reached execution command
+
+runtime:
+  timeout_seconds: 120
+  max_retries: 0
+  resources: {}
+  env: []
+
+monitoring:
+  mode: poll
+  interval_seconds: 2
+  success:
+    exit_code: 0
+    required_outputs: [args_report]
+
+artifacts:
+  collect:
+    - results/*.txt
+
+security:
+  secrets: []

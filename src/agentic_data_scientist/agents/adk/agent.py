@@ -6,9 +6,11 @@ implementation, and verification agents.
 """
 
 import logging
+import json
+import re
 import warnings
 from pathlib import Path
-from typing import AsyncGenerator, List, Optional
+from typing import Any, AsyncGenerator, List, Optional
 
 from dotenv import load_dotenv
 from google.adk.agents import InvocationContext, LoopAgent, SequentialAgent
@@ -27,11 +29,18 @@ from agentic_data_scientist.agents.adk.implementation_loop import make_implement
 from agentic_data_scientist.agents.adk.loop_detection import LoopDetectionAgent
 from agentic_data_scientist.agents.adk.review_confirmation import create_review_confirmation_agent
 from agentic_data_scientist.agents.adk.utils import (
-    DEFAULT_MODEL,
-    REVIEW_MODEL,
+    DEFAULT_MODEL_NAME,
+    REVIEW_MODEL_NAME,
     get_generate_content_config,
+    get_litellm_candidates_for_role,
     is_network_disabled,
 )
+from agentic_data_scientist.core.state_contracts import (
+    StateKeys,
+    make_stage_record,
+    make_success_criterion_record,
+)
+from agentic_data_scientist.core.knowledge_constraints import normalize_and_validate_stage_constraints
 from agentic_data_scientist.prompts import load_prompt
 
 
@@ -55,6 +64,19 @@ class Stage(BaseModel):
 
     title: str = Field(description="Stage title")
     description: str = Field(description="Detailed stage description")
+    stage_id: Optional[str] = Field(default=None, description="Optional stable stage id")
+    depends_on: Optional[List[str]] = Field(
+        default=None, description="Optional list of stage ids/indexes this stage depends on"
+    )
+    inputs_required: Optional[List[str]] = Field(
+        default=None, description="Optional required inputs/artifacts for this stage"
+    )
+    outputs_produced: Optional[List[str]] = Field(
+        default=None, description="Optional outputs/artifacts produced by this stage"
+    )
+    evidence_refs: Optional[List[str]] = Field(
+        default=None, description="Optional evidence references supporting stage completion"
+    )
 
 
 class SuccessCriterion(BaseModel):
@@ -96,6 +118,11 @@ class NewStage(BaseModel):
 
     title: str = Field(description="New stage title")
     description: str = Field(description="New stage description")
+    stage_id: Optional[str] = Field(default=None, description="Optional stable stage id")
+    depends_on: Optional[List[str]] = Field(default=None, description="Optional dependency stage ids/indexes")
+    inputs_required: Optional[List[str]] = Field(default=None, description="Optional required inputs for the stage")
+    outputs_produced: Optional[List[str]] = Field(default=None, description="Optional outputs produced by the stage")
+    evidence_refs: Optional[List[str]] = Field(default=None, description="Optional evidence references")
 
 
 class StageReflectorOutput(BaseModel):
@@ -112,6 +139,104 @@ STAGE_REFLECTOR_OUTPUT_SCHEMA = StageReflectorOutput
 
 
 # ========================= Callbacks =========================
+
+
+_WORKFLOW_ID_PATTERN = re.compile(r"(?im)\bworkflow_id\s*[:=]\s*([A-Za-z0-9_.\-\/]+)")
+_WORKFLOW_TAG_PATTERN = re.compile(r"(?im)\[\s*workflow\s*[:=]\s*([A-Za-z0-9_.\-\/]+)\s*\]")
+_WORKFLOW_VERSION_PATTERN = re.compile(r"(?im)\bworkflow_version\s*[:=]\s*([A-Za-z0-9_.\-]+)")
+_EXECUTION_MODE_PATTERN = re.compile(r"(?im)\bexecution_mode\s*[:=]\s*([A-Za-z0-9_.\-]+)")
+_WORKFLOW_INPUTS_PATTERN = re.compile(r"(?im)\bworkflow_inputs\s*[:=]\s*(\{.*\})")
+_WORKFLOW_PARAMS_PATTERN = re.compile(r"(?im)\bworkflow_params\s*[:=]\s*(\{.*\})")
+_WORKFLOW_OUTDIR_PATTERN = re.compile(r"(?im)\bworkflow_outdir\s*[:=]\s*([^\n]+)")
+_DEPENDS_ON_PATTERN = re.compile(r"(?im)\bdepends_on\s*[:=]\s*(\[[^\n]*\])")
+_INPUTS_REQUIRED_PATTERN = re.compile(r"(?im)\binputs_required\s*[:=]\s*(\[[^\n]*\])")
+_OUTPUTS_PRODUCED_PATTERN = re.compile(r"(?im)\boutputs_produced\s*[:=]\s*(\[[^\n]*\])")
+_EVIDENCE_REFS_PATTERN = re.compile(r"(?im)\bevidence_refs\s*[:=]\s*(\[[^\n]*\])")
+
+
+def _first_match(pattern: re.Pattern[str], text: str) -> str:
+    match = pattern.search(text)
+    if not match:
+        return ""
+    return str(match.group(1)).strip()
+
+
+def _parse_json_object(text: str) -> dict:
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+    return {}
+
+
+def _parse_json_array(text: str) -> list:
+    if not text:
+        return []
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, list):
+            values = [str(item).strip() for item in parsed if str(item).strip()]
+            return values
+    except Exception:
+        pass
+    return []
+
+
+def _extract_stage_execution_hints(*, title: str, description: str) -> dict:
+    """Extract optional workflow execution hints from stage text."""
+    combined = f"{title}\n{description}"
+    hints: dict = {}
+
+    workflow_id = _first_match(_WORKFLOW_ID_PATTERN, combined)
+    if not workflow_id:
+        workflow_id = _first_match(_WORKFLOW_TAG_PATTERN, combined)
+    if workflow_id:
+        hints["workflow_id"] = workflow_id
+
+    workflow_version = _first_match(_WORKFLOW_VERSION_PATTERN, combined)
+    if workflow_version:
+        hints["workflow_version"] = workflow_version
+
+    execution_mode = _first_match(_EXECUTION_MODE_PATTERN, combined).lower()
+    if execution_mode:
+        hints["execution_mode"] = execution_mode
+
+    workflow_outdir = _first_match(_WORKFLOW_OUTDIR_PATTERN, combined)
+    if workflow_outdir:
+        hints["workflow_outdir"] = workflow_outdir
+
+    workflow_inputs = _parse_json_object(_first_match(_WORKFLOW_INPUTS_PATTERN, combined))
+    if workflow_inputs:
+        hints["workflow_inputs"] = workflow_inputs
+
+    workflow_params = _parse_json_object(_first_match(_WORKFLOW_PARAMS_PATTERN, combined))
+    if workflow_params:
+        hints["workflow_params"] = workflow_params
+
+    depends_on = _parse_json_array(_first_match(_DEPENDS_ON_PATTERN, combined))
+    if depends_on:
+        hints["depends_on"] = depends_on
+
+    inputs_required = _parse_json_array(_first_match(_INPUTS_REQUIRED_PATTERN, combined))
+    if inputs_required:
+        hints["inputs_required"] = inputs_required
+
+    outputs_produced = _parse_json_array(_first_match(_OUTPUTS_PRODUCED_PATTERN, combined))
+    if outputs_produced:
+        hints["outputs_produced"] = outputs_produced
+
+    evidence_refs = _parse_json_array(_first_match(_EVIDENCE_REFS_PATTERN, combined))
+    if evidence_refs:
+        hints["evidence_refs"] = evidence_refs
+
+    if hints.get("workflow_id") and "execution_mode" not in hints:
+        hints["execution_mode"] = "workflow"
+
+    return hints
 
 
 def plan_parser_callback(callback_context: CallbackContext):
@@ -131,7 +256,7 @@ def plan_parser_callback(callback_context: CallbackContext):
     state = ctx.session.state
 
     # Get the output from the agent
-    parsed_output = state.get("parsed_plan_output")
+    parsed_output = state.get(StateKeys.PARSED_PLAN_OUTPUT)
 
     if not parsed_output:
         logger.error("[PlanParser] No parsed output found in state")
@@ -155,55 +280,77 @@ def plan_parser_callback(callback_context: CallbackContext):
 
     logger.info("[PlanParser] Processing parsed plan output")
 
-    # Initialize stages with tracking fields
+    if not stages_data:
+        logger.error("[PlanParser] Empty stages list - rejecting parsed output")
+        return
+
+    if not criteria_data:
+        logger.error("[PlanParser] Empty success_criteria list - rejecting parsed output")
+        return
+
+    # Strict validation: reject entire update if any item is invalid
     stages = []
     for idx, stage in enumerate(stages_data):
-        # Validate stage structure
-        if not isinstance(stage, dict) or "title" not in stage or "description" not in stage:
-            logger.error(f"[PlanParser] Invalid stage structure at index {idx}: {stage}")
-            continue
+        if not isinstance(stage, dict):
+            logger.error(f"[PlanParser] Invalid stage type at index {idx}: {type(stage)}")
+            return
 
-        stages.append(
-            {
-                "index": idx,
-                "title": stage["title"],
-                "description": stage["description"],
-                "completed": False,
-                "implementation_result": None,
-            }
+        title = stage.get("title")
+        description = stage.get("description")
+        if not isinstance(title, str) or not title.strip():
+            logger.error(f"[PlanParser] Invalid stage title at index {idx}: {title!r}")
+            return
+        if not isinstance(description, str) or not description.strip():
+            logger.error(f"[PlanParser] Invalid stage description at index {idx}: {description!r}")
+            return
+
+        stage_record = make_stage_record(
+            index=idx,
+            title=title,
+            description=description,
+            completed=False,
+            stage_id=stage.get("stage_id"),
+            depends_on=stage.get("depends_on"),
+            inputs_required=stage.get("inputs_required"),
+            outputs_produced=stage.get("outputs_produced"),
+            evidence_refs=stage.get("evidence_refs"),
         )
+        hints = _extract_stage_execution_hints(title=title, description=description)
+        if hints:
+            stage_record.update(hints)
+        stages.append(stage_record)
 
-    # Initialize criteria with tracking fields
     criteria = []
     for idx, crit in enumerate(criteria_data):
-        # Validate criterion structure
-        if not isinstance(crit, dict) or "criteria" not in crit:
-            logger.error(f"[PlanParser] Invalid criterion structure at index {idx}: {crit}")
-            continue
+        if not isinstance(crit, dict):
+            logger.error(f"[PlanParser] Invalid criterion type at index {idx}: {type(crit)}")
+            return
+
+        criteria_text = crit.get("criteria")
+        if not isinstance(criteria_text, str) or not criteria_text.strip():
+            logger.error(f"[PlanParser] Invalid criterion text at index {idx}: {criteria_text!r}")
+            return
 
         criteria.append(
-            {
-                "index": idx,
-                "criteria": crit["criteria"],
-                "met": False,
-                "evidence": None,
-            }
+            make_success_criterion_record(
+                index=idx,
+                criteria=criteria_text,
+            )
         )
 
-    # Only update state if we have valid stages and criteria
-    if not stages:
-        logger.error("[PlanParser] No valid stages after parsing - not updating state")
+    constraints = normalize_and_validate_stage_constraints(stages, apply_sequential_defaults=True)
+    if constraints.errors:
+        for error in constraints.errors:
+            logger.error(f"[PlanParser] Constraint validation failed: {error}")
         return
+    for warning in constraints.warnings:
+        logger.warning(f"[PlanParser] Constraint warning: {warning}")
 
-    if not criteria:
-        logger.error("[PlanParser] No valid criteria after parsing - not updating state")
-        return
+    state[StateKeys.HIGH_LEVEL_STAGES] = constraints.stages
+    state[StateKeys.HIGH_LEVEL_SUCCESS_CRITERIA] = criteria
+    state[StateKeys.CURRENT_STAGE_INDEX] = 0
 
-    state["high_level_stages"] = stages
-    state["high_level_success_criteria"] = criteria
-    state["current_stage_index"] = 0
-
-    logger.info(f"[PlanParser] Initialized {len(stages)} stages and {len(criteria)} criteria")
+    logger.info(f"[PlanParser] Initialized {len(constraints.stages)} stages and {len(criteria)} criteria")
 
 
 def criteria_checker_callback(callback_context: CallbackContext):
@@ -222,8 +369,8 @@ def criteria_checker_callback(callback_context: CallbackContext):
     ctx = callback_context._invocation_context
     state = ctx.session.state
 
-    criteria_output = state.get("criteria_checker_output")
-    criteria = state.get("high_level_success_criteria", [])
+    criteria_output = state.get(StateKeys.CRITERIA_CHECKER_OUTPUT)
+    criteria = state.get(StateKeys.HIGH_LEVEL_SUCCESS_CRITERIA, [])
 
     if not criteria_output:
         logger.error("[CriteriaChecker] No output found in state")
@@ -238,54 +385,72 @@ def criteria_checker_callback(callback_context: CallbackContext):
         logger.error(f"[CriteriaChecker] criteria_updates is not a list: {type(updates)}")
         return
 
-    logger.info("[CriteriaChecker] Updating criteria status")
+    if not isinstance(criteria, list) or not criteria:
+        logger.error("[CriteriaChecker] Missing or empty high_level_success_criteria in state")
+        return
 
-    valid_updates = 0
-    invalid_updates = 0
+    expected_indices = set(range(len(criteria)))
+    seen_indices = set()
+    parsed_updates = []
+
+    # Strict coverage rule: checker must return exactly one update per criterion
+    if len(updates) != len(criteria):
+        logger.error(
+            f"[CriteriaChecker] Rejecting updates: expected {len(criteria)} updates, got {len(updates)}"
+        )
+        return
 
     for update in updates:
-        # Validate update structure
         if not isinstance(update, dict):
-            logger.warning(f"[CriteriaChecker] Invalid update structure (not dict): {update}")
-            invalid_updates += 1
-            continue
+            logger.error(f"[CriteriaChecker] Invalid update structure (not dict): {update}")
+            return
 
         if "index" not in update or "met" not in update or "evidence" not in update:
-            logger.warning(f"[CriteriaChecker] Invalid update structure (missing fields): {update}")
-            invalid_updates += 1
-            continue
+            logger.error(f"[CriteriaChecker] Invalid update structure (missing fields): {update}")
+            return
 
         idx = update["index"]
-        if 0 <= idx < len(criteria):
-            criteria[idx]["met"] = update["met"]
-            criteria[idx]["evidence"] = update["evidence"]
-            valid_updates += 1
+        met = update["met"]
+        evidence = update["evidence"]
 
-            status = "✅ MET" if update["met"] else "❌ NOT MET"
-            criteria_text = criteria[idx].get("criteria", "Unknown")
-            evidence_text = update["evidence"]
+        if not isinstance(idx, int):
+            logger.error(f"[CriteriaChecker] Invalid index type: {type(idx)}")
+            return
+        if idx not in expected_indices:
+            logger.error(f"[CriteriaChecker] Invalid criterion index: {idx}")
+            return
+        if idx in seen_indices:
+            logger.error(f"[CriteriaChecker] Duplicate criterion index: {idx}")
+            return
+        if not isinstance(met, bool):
+            logger.error(f"[CriteriaChecker] Invalid met type at index {idx}: {type(met)}")
+            return
+        if not isinstance(evidence, str) or not evidence.strip():
+            logger.error(f"[CriteriaChecker] Invalid evidence at index {idx}: {evidence!r}")
+            return
 
-            logger.info(f"[CriteriaChecker] Criterion {idx}: {status}")
-            logger.info(f"[CriteriaChecker]   └─ Criteria: {criteria_text}")
-            logger.info(f"[CriteriaChecker]   └─ Evidence: {evidence_text}")
-        else:
-            logger.warning(f"[CriteriaChecker] Invalid criterion index: {idx}")
-            invalid_updates += 1
+        seen_indices.add(idx)
+        parsed_updates.append((idx, met, evidence))
 
-    if valid_updates == 0:
-        logger.error("[CriteriaChecker] No valid updates processed")
-    elif invalid_updates > len(criteria) // 2:
-        # More than half of updates are invalid
+    if seen_indices != expected_indices:
         logger.error(
-            f"[CriteriaChecker] Too many invalid updates ({invalid_updates}/{len(updates)}) - "
-            "criteria check may be unreliable"
+            f"[CriteriaChecker] Rejecting updates: missing indices {sorted(expected_indices - seen_indices)}"
         )
+        return
 
-    # Log summary of all criteria statuses
+    logger.info("[CriteriaChecker] Updating criteria status")
+    for idx, met, evidence in parsed_updates:
+        criteria[idx]["met"] = met
+        criteria[idx]["evidence"] = evidence
+        status = "✅ MET" if met else "❌ NOT MET"
+        criteria_text = criteria[idx].get("criteria", "Unknown")
+        logger.info(f"[CriteriaChecker] Criterion {idx}: {status}")
+        logger.info(f"[CriteriaChecker]   └─ Criteria: {criteria_text}")
+        logger.info(f"[CriteriaChecker]   └─ Evidence: {evidence}")
+
     met_count = sum(1 for c in criteria if c.get("met", False))
     logger.info(f"[CriteriaChecker] Summary: {met_count}/{len(criteria)} criteria met")
-
-    state["high_level_success_criteria"] = criteria
+    state[StateKeys.HIGH_LEVEL_SUCCESS_CRITERIA] = criteria
 
 
 def stage_reflector_callback(callback_context: CallbackContext):
@@ -304,8 +469,8 @@ def stage_reflector_callback(callback_context: CallbackContext):
     ctx = callback_context._invocation_context
     state = ctx.session.state
 
-    reflector_output = state.get("stage_reflector_output")
-    stages = state.get("high_level_stages", [])
+    reflector_output = state.get(StateKeys.STAGE_REFLECTOR_OUTPUT)
+    stages = state.get(StateKeys.HIGH_LEVEL_STAGES, [])
 
     if not reflector_output:
         logger.error("[StageReflector] No output found in state")
@@ -315,65 +480,112 @@ def stage_reflector_callback(callback_context: CallbackContext):
         logger.error(f"[StageReflector] Invalid output type: {type(reflector_output)}")
         return
 
+    if not isinstance(stages, list):
+        logger.error(f"[StageReflector] Invalid stages in state: {type(stages)}")
+        return
+
     logger.info("[StageReflector] Processing stage reflections")
 
-    # Apply modifications to existing stages
     modifications = reflector_output.get("stage_modifications", [])
+    new_stages = reflector_output.get("new_stages", [])
+
     if not isinstance(modifications, list):
         logger.error(f"[StageReflector] stage_modifications is not a list: {type(modifications)}")
-        modifications = []
-
-    for mod in modifications:
-        if not isinstance(mod, dict):
-            logger.warning(f"[StageReflector] Invalid modification structure: {mod}")
-            continue
-
-        if "index" not in mod or "new_description" not in mod:
-            logger.warning(f"[StageReflector] Missing fields in modification: {mod}")
-            continue
-
-        idx = mod["index"]
-        new_desc = mod.get("new_description", "")
-
-        if 0 <= idx < len(stages) and new_desc:
-            # Check if stage is completed - don't modify completed stages
-            if stages[idx].get("completed", False):
-                logger.warning(f"[StageReflector] Cannot modify completed stage {idx} - ignoring")
-                continue
-
-            stages[idx]["description"] = new_desc
-            logger.info(f"[StageReflector] Modified stage {idx} description")
-        elif new_desc:
-            logger.warning(f"[StageReflector] Invalid stage index for modification: {idx}")
-
-    # Add new stages
-    new_stages = reflector_output.get("new_stages", [])
+        return
     if not isinstance(new_stages, list):
         logger.error(f"[StageReflector] new_stages is not a list: {type(new_stages)}")
-        new_stages = []
+        return
 
+    # Strict validation before any state mutation
+    validated_modifications = []
+    for mod in modifications:
+        if not isinstance(mod, dict):
+            logger.error(f"[StageReflector] Invalid modification structure: {mod}")
+            return
+        if "index" not in mod or "new_description" not in mod:
+            logger.error(f"[StageReflector] Missing fields in modification: {mod}")
+            return
+
+        idx = mod["index"]
+        new_desc = mod["new_description"]
+        if not isinstance(idx, int):
+            logger.error(f"[StageReflector] Invalid modification index type: {type(idx)}")
+            return
+        if not isinstance(new_desc, str):
+            logger.error(f"[StageReflector] Invalid new_description type for stage {idx}: {type(new_desc)}")
+            return
+        if idx < 0 or idx >= len(stages):
+            logger.error(f"[StageReflector] Invalid stage index for modification: {idx}")
+            return
+        if stages[idx].get("completed", False):
+            logger.error(f"[StageReflector] Modification attempted on completed stage {idx}")
+            return
+
+        # Empty description means no-op (allowed by schema)
+        if new_desc.strip():
+            validated_modifications.append((idx, new_desc))
+
+    validated_new_stages: List[Dict[str, Any]] = []
     for new_stage in new_stages:
         if not isinstance(new_stage, dict):
-            logger.warning(f"[StageReflector] Invalid new stage structure: {new_stage}")
-            continue
-
+            logger.error(f"[StageReflector] Invalid new stage structure: {new_stage}")
+            return
         if "title" not in new_stage or "description" not in new_stage:
-            logger.warning(f"[StageReflector] Missing fields in new stage: {new_stage}")
-            continue
+            logger.error(f"[StageReflector] Missing fields in new stage: {new_stage}")
+            return
 
+        title = new_stage["title"]
+        description = new_stage["description"]
+        if not isinstance(title, str) or not title.strip():
+            logger.error(f"[StageReflector] Invalid new stage title: {title!r}")
+            return
+        if not isinstance(description, str) or not description.strip():
+            logger.error(f"[StageReflector] Invalid new stage description: {description!r}")
+            return
+
+        validated_new_stages.append(
+            {
+                "title": title,
+                "description": description,
+                "stage_id": new_stage.get("stage_id"),
+                "depends_on": new_stage.get("depends_on"),
+                "inputs_required": new_stage.get("inputs_required"),
+                "outputs_produced": new_stage.get("outputs_produced"),
+                "evidence_refs": new_stage.get("evidence_refs"),
+            }
+        )
+
+    # Apply validated modifications and additions
+    for idx, new_desc in validated_modifications:
+        stages[idx]["description"] = new_desc
+        logger.info(f"[StageReflector] Modified stage {idx} description")
+
+    for new_stage in validated_new_stages:
         new_idx = len(stages)
         stages.append(
-            {
-                "index": new_idx,
-                "title": new_stage["title"],
-                "description": new_stage["description"],
-                "completed": False,
-                "implementation_result": None,
-            }
+            make_stage_record(
+                index=new_idx,
+                title=new_stage["title"],
+                description=new_stage["description"],
+                completed=False,
+                stage_id=new_stage["stage_id"],
+                depends_on=new_stage["depends_on"],
+                inputs_required=new_stage["inputs_required"],
+                outputs_produced=new_stage["outputs_produced"],
+                evidence_refs=new_stage["evidence_refs"],
+            )
         )
         logger.info(f"[StageReflector] Added new stage {new_idx}: {new_stage['title']}")
 
-    state["high_level_stages"] = stages
+    constraints = normalize_and_validate_stage_constraints(stages, apply_sequential_defaults=True)
+    if constraints.errors:
+        for error in constraints.errors:
+            logger.error(f"[StageReflector] Constraint validation failed: {error}")
+        return
+    for warning in constraints.warnings:
+        logger.warning(f"[StageReflector] Constraint warning: {warning}")
+
+    state[StateKeys.HIGH_LEVEL_STAGES] = constraints.stages
 
 
 class NonEscalatingLoopAgent(LoopAgent):
@@ -484,6 +696,32 @@ def create_agent(
 
     logger.info(f"[AgenticDS] Configured {len(tools)} local tools")
 
+    # Resolve role-based models (with routing + startup fallback).
+    summary_model, summary_fallback_model, summary_selection = get_litellm_candidates_for_role(
+        role="summary_agent",
+        default_model_name=DEFAULT_MODEL_NAME,
+    )
+    plan_maker_model, plan_maker_fallback_model, plan_maker_selection = get_litellm_candidates_for_role(
+        role="plan_maker",
+        default_model_name=DEFAULT_MODEL_NAME,
+    )
+    plan_reviewer_model, plan_reviewer_fallback_model, plan_reviewer_selection = get_litellm_candidates_for_role(
+        role="plan_reviewer",
+        default_model_name=REVIEW_MODEL_NAME,
+    )
+    plan_parser_model, plan_parser_fallback_model, plan_parser_selection = get_litellm_candidates_for_role(
+        role="plan_parser",
+        default_model_name=DEFAULT_MODEL_NAME,
+    )
+    criteria_checker_model, criteria_checker_fallback_model, criteria_checker_selection = get_litellm_candidates_for_role(
+        role="criteria_checker",
+        default_model_name=REVIEW_MODEL_NAME,
+    )
+    stage_reflector_model, stage_reflector_fallback_model, stage_reflector_selection = get_litellm_candidates_for_role(
+        role="stage_reflector",
+        default_model_name=DEFAULT_MODEL_NAME,
+    )
+
     # ------------------------- Implementation Loop -------------------------
 
     coding_agent, review_agent, review_confirmation = make_implementation_agents(str(working_dir), tools)
@@ -501,11 +739,19 @@ def create_agent(
     logger.info("[AgenticDS] Loading summary_agent prompt")
     summary_agent_instructions = load_prompt("summary")
 
-    logger.info(f"[AgenticDS] Creating summary_agent with model={DEFAULT_MODEL}")
+    logger.info(f"[AgenticDS] Creating summary_agent with model={summary_model}")
 
     summary_agent = LoopDetectionAgent(
         name="summary_agent",
-        model=DEFAULT_MODEL,
+        model=summary_model,
+        fallback_model=summary_fallback_model,
+        fallback_max_retries=summary_selection.max_retry,
+        routing_role="summary_agent",
+        primary_profile_name=(
+            summary_selection.selected_profile.name
+            if summary_selection.selected_profile is not None
+            else summary_selection.primary_model
+        ),
         description="Summarizes results into a comprehensive pure text report.",
         instruction=summary_agent_instructions,
         tools=tools,  # Needs tools to read files
@@ -523,17 +769,29 @@ def create_agent(
     logger.info("[AgenticDS] Loading plan maker agent prompt")
     plan_maker_instructions = load_prompt("plan_maker")
 
-    logger.info(f"[AgenticDS] Creating plan maker agent with model={DEFAULT_MODEL}")
+    logger.info(f"[AgenticDS] Creating plan maker agent with model={plan_maker_model}")
 
-    plan_maker_compression = create_compression_callback(event_threshold=40, overlap_size=20)
+    plan_maker_compression = create_compression_callback(
+        event_threshold=40,
+        overlap_size=20,
+        model_name=str(getattr(plan_maker_model, "model", DEFAULT_MODEL_NAME)),
+    )
 
     plan_maker_agent = LoopDetectionAgent(
         name="plan_maker_agent",
-        model=DEFAULT_MODEL,
+        model=plan_maker_model,
+        fallback_model=plan_maker_fallback_model,
+        fallback_max_retries=plan_maker_selection.max_retry,
+        routing_role="plan_maker",
+        primary_profile_name=(
+            plan_maker_selection.selected_profile.name
+            if plan_maker_selection.selected_profile is not None
+            else plan_maker_selection.primary_model
+        ),
         description="Plan maker agent - creates high-level plans for complex tasks.",
         instruction=plan_maker_instructions,
         tools=tools,
-        output_key="high_level_plan",
+        output_key=StateKeys.HIGH_LEVEL_PLAN,
         planner=BuiltInPlanner(
             thinking_config=types.ThinkingConfig(
                 include_thoughts=True,
@@ -547,17 +805,29 @@ def create_agent(
     logger.info("[AgenticDS] Loading plan reviewer agent prompt")
     plan_reviewer_instructions = load_prompt("plan_reviewer")
 
-    logger.info(f"[AgenticDS] Creating plan reviewer agent with model={REVIEW_MODEL}")
+    logger.info(f"[AgenticDS] Creating plan reviewer agent with model={plan_reviewer_model}")
 
-    plan_reviewer_compression = create_compression_callback(event_threshold=40, overlap_size=20)
+    plan_reviewer_compression = create_compression_callback(
+        event_threshold=40,
+        overlap_size=20,
+        model_name=str(getattr(plan_reviewer_model, "model", REVIEW_MODEL_NAME)),
+    )
 
     plan_reviewer_agent = LoopDetectionAgent(
         name="plan_reviewer_agent",
-        model=REVIEW_MODEL,
+        model=plan_reviewer_model,
+        fallback_model=plan_reviewer_fallback_model,
+        fallback_max_retries=plan_reviewer_selection.max_retry,
+        routing_role="plan_reviewer",
+        primary_profile_name=(
+            plan_reviewer_selection.selected_profile.name
+            if plan_reviewer_selection.selected_profile is not None
+            else plan_reviewer_selection.primary_model
+        ),
         description="Plan reviewer agent - reviews high-level plans for completeness and correctness.",
         instruction=plan_reviewer_instructions,
         tools=tools,
-        output_key="plan_review_feedback",
+        output_key=StateKeys.PLAN_REVIEW_FEEDBACK,
         planner=BuiltInPlanner(
             thinking_config=types.ThinkingConfig(
                 include_thoughts=True,
@@ -574,7 +844,19 @@ def create_agent(
         sub_agents=[
             plan_maker_agent,
             plan_reviewer_agent,
-            create_review_confirmation_agent(auto_exit_on_completion=True, prompt_name="plan_review_confirmation"),
+            create_review_confirmation_agent(
+                auto_exit_on_completion=True,
+                prompt_name="plan_review_confirmation",
+                model=plan_reviewer_model,
+                fallback_model=plan_reviewer_fallback_model,
+                fallback_max_retries=plan_reviewer_selection.max_retry,
+                routing_role="plan_reviewer",
+                primary_profile_name=(
+                    plan_reviewer_selection.selected_profile.name
+                    if plan_reviewer_selection.selected_profile is not None
+                    else plan_reviewer_selection.primary_model
+                ),
+            ),
         ],
         max_iterations=10,
     )
@@ -584,16 +866,24 @@ def create_agent(
     logger.info("[AgenticDS] Loading plan parser prompt")
     plan_parser_instructions = load_prompt("plan_parser")
 
-    logger.info(f"[AgenticDS] Creating plan parser agent with model={DEFAULT_MODEL}")
+    logger.info(f"[AgenticDS] Creating plan parser agent with model={plan_parser_model}")
 
     high_level_plan_parser = LoopDetectionAgent(
         name="high_level_plan_parser",
-        model=DEFAULT_MODEL,
+        model=plan_parser_model,
+        fallback_model=plan_parser_fallback_model,
+        fallback_max_retries=plan_parser_selection.max_retry,
+        routing_role="plan_parser",
+        primary_profile_name=(
+            plan_parser_selection.selected_profile.name
+            if plan_parser_selection.selected_profile is not None
+            else plan_parser_selection.primary_model
+        ),
         description="Parses high-level plan into stages and success criteria.",
         instruction=plan_parser_instructions,
         tools=[],  # NO TOOLS - pure JSON parsing
         output_schema=PLAN_PARSER_OUTPUT_SCHEMA,
-        output_key="parsed_plan_output",
+        output_key=StateKeys.PARSED_PLAN_OUTPUT,
         after_agent_callback=plan_parser_callback,
         generate_content_config=get_generate_content_config(temperature=0.0),
     )
@@ -603,9 +893,13 @@ def create_agent(
     logger.info("[AgenticDS] Loading criteria checker prompt")
     criteria_checker_instructions = load_prompt("criteria_checker")
 
-    logger.info(f"[AgenticDS] Creating criteria checker agent with model={REVIEW_MODEL}")
+    logger.info(f"[AgenticDS] Creating criteria checker agent with model={criteria_checker_model}")
 
-    criteria_checker_compression = create_compression_callback(event_threshold=40, overlap_size=20)
+    criteria_checker_compression = create_compression_callback(
+        event_threshold=40,
+        overlap_size=20,
+        model_name=str(getattr(criteria_checker_model, "model", REVIEW_MODEL_NAME)),
+    )
 
     # Combine compression callback with criteria checker callback
     async def combined_criteria_callback(callback_context):
@@ -616,12 +910,20 @@ def create_agent(
 
     success_criteria_checker = LoopDetectionAgent(
         name="success_criteria_checker",
-        model=REVIEW_MODEL,
+        model=criteria_checker_model,
+        fallback_model=criteria_checker_fallback_model,
+        fallback_max_retries=criteria_checker_selection.max_retry,
+        routing_role="criteria_checker",
+        primary_profile_name=(
+            criteria_checker_selection.selected_profile.name
+            if criteria_checker_selection.selected_profile is not None
+            else criteria_checker_selection.primary_model
+        ),
         description="Checks which high-level success criteria have been met.",
         instruction=criteria_checker_instructions,
         tools=tools,  # NEEDS TOOLS to inspect files
         output_schema=CRITERIA_CHECKER_OUTPUT_SCHEMA,
-        output_key="criteria_checker_output",
+        output_key=StateKeys.CRITERIA_CHECKER_OUTPUT,
         after_agent_callback=combined_criteria_callback,
         generate_content_config=get_generate_content_config(temperature=0.0),
     )
@@ -631,9 +933,13 @@ def create_agent(
     logger.info("[AgenticDS] Loading stage reflector prompt")
     stage_reflector_instructions = load_prompt("stage_reflector")
 
-    logger.info(f"[AgenticDS] Creating stage reflector agent with model={DEFAULT_MODEL}")
+    logger.info(f"[AgenticDS] Creating stage reflector agent with model={stage_reflector_model}")
 
-    stage_reflector_compression = create_compression_callback(event_threshold=40, overlap_size=20)
+    stage_reflector_compression = create_compression_callback(
+        event_threshold=40,
+        overlap_size=20,
+        model_name=str(getattr(stage_reflector_model, "model", DEFAULT_MODEL_NAME)),
+    )
 
     # Combine compression callback with stage reflector callback
     async def combined_reflector_callback(callback_context):
@@ -644,12 +950,20 @@ def create_agent(
 
     stage_reflector = LoopDetectionAgent(
         name="stage_reflector",
-        model=DEFAULT_MODEL,
+        model=stage_reflector_model,
+        fallback_model=stage_reflector_fallback_model,
+        fallback_max_retries=stage_reflector_selection.max_retry,
+        routing_role="stage_reflector",
+        primary_profile_name=(
+            stage_reflector_selection.selected_profile.name
+            if stage_reflector_selection.selected_profile is not None
+            else stage_reflector_selection.primary_model
+        ),
         description="Reflects on and adapts remaining implementation stages.",
         instruction=stage_reflector_instructions,
         tools=tools,  # NEEDS TOOLS for context
         output_schema=STAGE_REFLECTOR_OUTPUT_SCHEMA,
-        output_key="stage_reflector_output",
+        output_key=StateKeys.STAGE_REFLECTOR_OUTPUT,
         after_agent_callback=combined_reflector_callback,
         generate_content_config=get_generate_content_config(temperature=0.4),
     )

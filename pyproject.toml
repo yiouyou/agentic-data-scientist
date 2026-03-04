@@ -71,6 +71,9 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 asyncio_mode = "auto"
+addopts = "--basetemp=.tmp/pytest_run -p no:cacheprovider"
+cache_dir = ".tmp/.pytest_cache"
+norecursedirs = ["pytest-cache-files-*", ".tmp/pytest-of-*"]
 
 [dependency-groups]
 dev = [

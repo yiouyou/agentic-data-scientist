@@ -1,3 +1,12 @@
+.pytest_tmp/
+.test_core_api_workdir/
+.uv-cache/
+pytest-cache-files-*/
+
+findings.md
+progress.md
+task_plan.md
+
 # Python-generated files
 __pycache__/
 *.py[oc]

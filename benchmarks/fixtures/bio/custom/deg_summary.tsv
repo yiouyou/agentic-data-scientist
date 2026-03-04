@@ -1,0 +1,5 @@
+gene_id	log2fc	p_adj
+TP53	1.8	0.0004
+STAT3	1.2	0.0041
+MYC	-1.4	0.0015
+GATA3	-1.1	0.0079

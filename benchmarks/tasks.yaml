@@ -1,0 +1,132 @@
+version: 1
+name: synthetic-benchmark-suite
+description: Synthetic benchmark set for fast validation of quality/stability improvements.
+
+defaults:
+  mode: orchestrated
+  repeat: 1
+  timeout_sec: 1200
+
+tasks:
+  - id: bio_rnaseq_nfcore_route
+    title: RNA-seq fixed workflow routing
+    prompt: >
+      Analyze the RNA-seq sample sheet and produce a high-level plan.
+      Prefer nf-core/Nextflow style fixed workflow execution when suitable.
+      Explicitly include workflow_id, depends_on, inputs_required, outputs_produced.
+    files:
+      - bio/rnaseq/samplesheet.csv
+    tags: [bioinformatics, routing, workflow]
+    expected:
+      response_contains:
+        - workflow_id
+        - depends_on
+        - outputs_produced
+
+  - id: bio_wgs_variant_route
+    title: WGS variant calling fixed workflow routing
+    prompt: >
+      Build a staged analysis plan for tumor/normal WGS variant calling.
+      Prefer fixed workflow execution and include required inputs and expected outputs.
+    files:
+      - bio/wgs/samplesheet.csv
+    tags: [bioinformatics, routing, workflow]
+    expected:
+      response_contains:
+        - variant
+        - workflow
+
+  - id: bio_custom_latch_extension
+    title: Customized extension after fixed pipeline
+    prompt: >
+      Plan a two-part pipeline: first run a fixed RNA-seq workflow, then add a custom analysis
+      step for pathway-focused filtering and report generation.
+    files:
+      - bio/rnaseq/samplesheet.csv
+      - bio/custom/pathway_targets.tsv
+    tags: [bioinformatics, hybrid, customization]
+    expected:
+      response_contains:
+        - custom
+        - pathway
+
+  - id: skill_scientific_writer
+    title: Scientific writing skill usage
+    prompt: >
+      Draft a Discussion section from differential expression findings with limitations,
+      biological interpretation, and next-step experiments.
+    files:
+      - bio/custom/deg_summary.tsv
+    tags: [skills, writing, synthesis]
+    expected:
+      response_contains:
+        - discussion
+        - limitations
+
+  - id: skill_annotation_mapping
+    title: Annotation and mapping task
+    prompt: >
+      Propose a reproducible plan to map gene symbols to functions and produce
+      a compact annotation table for downstream analysis.
+    files:
+      - general/gene_list.txt
+    tags: [skills, annotation, data]
+    expected:
+      response_contains:
+        - annotation
+        - table
+
+  - id: constraints_validation_plan
+    title: Knowledge constraints validation pressure test
+    prompt: >
+      Produce a stage-based plan with explicit stage_id, depends_on, inputs_required,
+      outputs_produced, and evidence_refs for each stage.
+    tags: [planning, constraints]
+    expected:
+      response_contains:
+        - stage_id
+        - evidence_refs
+
+  - id: selector_rollout_bio_canary
+    title: Plan selector rollout canary for bio intent
+    prompt: >
+      For RNA-seq differential expression, generate and refine a robust stage plan.
+      Keep it concise and executable.
+    files:
+      - bio/rnaseq/samplesheet.csv
+    tags: [rollout, learning, canary]
+    env:
+      ADS_PLAN_SELECTOR_ENABLED: "true"
+      ADS_PLAN_SELECTOR_ROLLOUT_PERCENT: "20"
+      ADS_PLAN_SELECTOR_INTENT_REGEXES: "rna-?seq,variant,wgs"
+      ADS_PLAN_SELECTOR_ROLLOUT_SALT: "benchmark-suite"
+    repeat: 10
+    expected:
+      response_contains:
+        - rnaseq
+
+  - id: selector_rollout_non_bio_holdout
+    title: Plan selector holdout for non-bio intent
+    prompt: >
+      Build a workflow plan for sales forecasting with feature engineering and model evaluation.
+    files:
+      - general/sales_forecast.csv
+    tags: [rollout, holdout, non-bio]
+    env:
+      ADS_PLAN_SELECTOR_ENABLED: "true"
+      ADS_PLAN_SELECTOR_ROLLOUT_PERCENT: "20"
+      ADS_PLAN_SELECTOR_INTENT_REGEXES: "rna-?seq,variant,wgs"
+      ADS_PLAN_SELECTOR_ROLLOUT_SALT: "benchmark-suite"
+    repeat: 5
+    expected:
+      response_contains:
+        - forecast
+
+  - id: history_replay_report
+    title: Offline replay summary generation
+    type: history_replay
+    history_replay_limit: 200
+    tags: [learning, replay, metrics]
+    expected:
+      response_contains:
+        - Planner Selection Replay

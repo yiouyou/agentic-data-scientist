@@ -1,0 +1,5 @@
+sample_id,condition,replicate,fastq_1,fastq_2
+ctrl_1,control,1,data/ctrl_1_R1.fastq.gz,data/ctrl_1_R2.fastq.gz
+ctrl_2,control,2,data/ctrl_2_R1.fastq.gz,data/ctrl_2_R2.fastq.gz
+trt_1,treatment,1,data/trt_1_R1.fastq.gz,data/trt_1_R2.fastq.gz
+trt_2,treatment,2,data/trt_2_R1.fastq.gz,data/trt_2_R2.fastq.gz

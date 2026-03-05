@@ -13,7 +13,7 @@
 ### 2. 技能发现与使用（关键）
 - **每个任务开始时必须先发现可用 Skills**
   - 询问："What Skills are available?" 获取技能清单
-  - Skills 从 `.claude/skills/` 加载，涵盖科学数据库与软件包
+  - Skills 从 `.claude/skills/scientific-skills/` 加载，涵盖科学数据库与软件包
 - **在可能情况下优先使用 Skills，而不是自写代码**
   - 例：数据库查询（UniProt、PubChem 等）使用数据库类 Skills
   - 例：特定包分析（BioPython、RDKit 等）使用包类 Skills

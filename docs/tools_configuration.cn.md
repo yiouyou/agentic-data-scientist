@@ -219,7 +219,7 @@ CONTEXT7_API_KEY=your-api-key-here
 
 ### Claude Scientific Skills（自动加载）
 
-编码智能体可自动访问来自 [claude-scientific-skills](https://github.com/K-Dense-AI/claude-scientific-skills) 的 380+ 科学技能。
+编码智能体可访问来自本地 [claude-scientific-skills](https://github.com/yiouyou/claude-scientific-skills) 副本的 380+ 科学技能。
 
 **状态：** 自动，无需配置。编码智能体启动时会自动加载技能。
 
@@ -239,7 +239,7 @@ CONTEXT7_API_KEY=your-api-key-here
 
 **Skills 工作机制：**
 
-1. **自动加载**：编码智能体启动时，Skills 会自动克隆到 `.claude/skills/`
+1. **本地复制加载**：编码智能体启动时，Skills 会从本地 `scientific-skills/` 复制到 `.claude/skills/scientific-skills/`
 2. **智能体发现**：编码智能体在运行时发现可用 Skills
 3. **自主使用**：智能体根据任务自动决定使用哪些 Skills
 4. **零配置**：无需环境变量或额外初始化

@@ -214,7 +214,7 @@ def get_claude_context(
 
 Execute the following stage implementation COMPLETELY and THOROUGHLY.
 
-IMPORTANT: You have scientific Skills available in .claude/skills/. 
+IMPORTANT: You have scientific Skills available in .claude/skills/scientific-skills/. 
 Start by asking "What Skills are available?" to discover specialized tools for your task.
 
 Parse this stage into discrete steps and execute EVERY step. Work through multiple related subtasks in this session. Do not exit until this stage is fully implemented.

@@ -353,6 +353,8 @@ ANTHROPIC_API_KEY=your_key_here
 # ADS_PLAN_SELECTOR_ROLLOUT_SALT=
 # ADS_PLAN_RANK_MIN_SWITCH_MARGIN=0.12
 # ADS_PLAN_ONLY=false
+# ADS_LOCAL_SKILLS_SOURCE="scientific-skills"
+# ADS_SKILLS_SCOPE_NAME="scientific-skills"
 # CODEX_COMMAND_TEMPLATE="codex exec --model {model}"
 # OPENCODE_COMMAND_TEMPLATE="opencode run --model {model}"
 ```
@@ -376,10 +378,10 @@ agentic-data-scientist --history-replay --history-replay-limit 200
   - `fetch_url`
 
 **Scientific Skills** (coding agent):
-- Skills repository is auto-bootstrapped to `.claude/skills/` (reused across coding executors)
-- Claude Code executor uses native skill loading from `.claude/skills/`
-- Codex/OpenCode executors are instructed to discover and apply `SKILL.md` files from local skill dirs
-- Source: [claude-scientific-skills](https://github.com/K-Dense-AI/claude-scientific-skills)
+- Skills are copied from local `scientific-skills/` into `.claude/skills/scientific-skills/` (reused across coding executors)
+- Claude Code executor uses skill loading from scoped path under `.claude/skills/`
+- Codex/OpenCode executors are instructed to discover and apply `SKILL.md` files from the scoped path
+- Source: [claude-scientific-skills](https://github.com/yiouyou/claude-scientific-skills)
 
 All tools are sandboxed to the working directory for security.
 
@@ -579,7 +581,7 @@ Built with:
 - [Google Agent Development Kit (ADK)](https://google.github.io/adk-docs/)
 - [Claude Agent SDK](https://docs.claude.com/en/api/agent-sdk)
 - [Model Context Protocol](https://modelcontextprotocol.io/)
-- [Claude Scientific Skills](https://github.com/K-Dense-AI/claude-scientific-skills)
+- [Claude Scientific Skills](https://github.com/yiouyou/claude-scientific-skills)
 
 ## License
 

@@ -219,7 +219,7 @@ CONTEXT7_API_KEY=your-api-key-here
 
 ### Claude Scientific Skills (Auto-Loaded)
 
-The coding agent has access to 380+ scientific Skills automatically loaded from [claude-scientific-skills](https://github.com/K-Dense-AI/claude-scientific-skills).
+The coding agent has access to 380+ scientific Skills loaded from a local [claude-scientific-skills](https://github.com/yiouyou/claude-scientific-skills) copy.
 
 **Status:** Automatic - No configuration needed. Skills are automatically loaded when the coding agent starts.
 
@@ -239,7 +239,7 @@ The coding agent has access to 380+ scientific Skills automatically loaded from 
 
 **How Skills Work:**
 
-1. **Automatic Loading**: Skills are automatically cloned to `.claude/skills/` when the coding agent starts
+1. **Local Copy Loading**: Skills are copied from local `scientific-skills/` to `.claude/skills/scientific-skills/` when the coding agent starts
 2. **Agent Discovery**: The coding agent discovers available Skills at runtime
 3. **Autonomous Usage**: The agent decides which Skills to use based on the task
 4. **No Configuration**: No environment variables or setup required

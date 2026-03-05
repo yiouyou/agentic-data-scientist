@@ -1,8 +1,9 @@
 """Unit tests for agent implementations."""
 
+import shutil
 import tempfile
+import uuid
 from pathlib import Path
-from unittest.mock import patch
 
 from agentic_data_scientist.agents.adk.loop_detection import LoopDetectionAgent
 from agentic_data_scientist.agents.claude_code.agent import (
@@ -137,23 +138,56 @@ class TestSetupWorkingDirectory:
 class TestSetupSkillsDirectory:
     """Test setup_skills_directory performance guards."""
 
-    def test_reuses_existing_skills_without_clone(self):
-        """Skip remote clone when a local skills directory already exists."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            skills_dir = Path(tmpdir) / ".claude" / "skills" / "existing_skill"
-            skills_dir.mkdir(parents=True, exist_ok=True)
+    def _new_case_dir(self, prefix: str) -> Path:
+        root = Path(".tmp") / "unit_skills_cases"
+        root.mkdir(parents=True, exist_ok=True)
+        case_dir = root / f"{prefix}_{uuid.uuid4().hex[:8]}"
+        case_dir.mkdir(parents=True, exist_ok=True)
+        return case_dir
 
-            with patch("subprocess.run") as mock_run:
-                setup_skills_directory(tmpdir)
-                mock_run.assert_not_called()
+    def test_reuses_existing_scoped_skills_without_overwrite(self):
+        """If scoped skills already exist, setup should keep them and return early."""
+        case_dir = self._new_case_dir("reuse_existing")
+        try:
+            existing_skill = case_dir / ".claude" / "skills" / "scientific-skills" / "existing_skill"
+            existing_skill.mkdir(parents=True, exist_ok=True)
+            (existing_skill / "SKILL.md").write_text("# existing", encoding="utf-8")
 
-    def test_skips_clone_when_network_disabled(self, monkeypatch):
-        """Skip remote clone when network is disabled by environment."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            monkeypatch.setenv("DISABLE_NETWORK_ACCESS", "true")
-            with patch("subprocess.run") as mock_run:
-                setup_skills_directory(tmpdir)
-                mock_run.assert_not_called()
+            # Even if a source path exists, early-return should keep existing skill untouched.
+            source = case_dir / "scientific-skills"
+            source.mkdir(parents=True, exist_ok=True)
+            new_skill = source / "new_skill"
+            new_skill.mkdir(parents=True, exist_ok=True)
+            (new_skill / "SKILL.md").write_text("# new", encoding="utf-8")
+
+            setup_skills_directory(str(case_dir))
+
+            assert (existing_skill / "SKILL.md").exists()
+            assert not (case_dir / ".claude" / "skills" / "scientific-skills" / "new_skill").exists()
+        finally:
+            shutil.rmtree(case_dir, ignore_errors=True)
+
+    def test_copies_local_scientific_skills_source(self, monkeypatch):
+        """Should copy skills from local scientific-skills source into scoped destination."""
+        case_dir = self._new_case_dir("copy_local")
+        try:
+            source = case_dir / "scientific-skills"
+            source.mkdir(parents=True, exist_ok=True)
+            good_skill = source / "good_skill"
+            good_skill.mkdir(parents=True, exist_ok=True)
+            (good_skill / "SKILL.md").write_text("# good", encoding="utf-8")
+            ignored = source / "ignored_dir"
+            ignored.mkdir(parents=True, exist_ok=True)
+            (ignored / "README.md").write_text("no skill marker", encoding="utf-8")
+
+            monkeypatch.setenv("ADS_LOCAL_SKILLS_SOURCE", str(source))
+            setup_skills_directory(str(case_dir))
+
+            dst_root = case_dir / ".claude" / "skills" / "scientific-skills"
+            assert (dst_root / "good_skill" / "SKILL.md").exists()
+            assert not (dst_root / "ignored_dir").exists()
+        finally:
+            shutil.rmtree(case_dir, ignore_errors=True)
 
 
 class TestLoopDetectionAgentFallback:

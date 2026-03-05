@@ -243,9 +243,7 @@ Requirements:
 
 SKILL EXECUTION MODE:
 - Discover reusable skill instructions from:
-  - .claude/skills/
-  - .codex/skills/ (if present)
-  - ~/.codex/skills/ (if accessible)
+  - .claude/skills/scientific-skills/
 - Before implementing, inspect relevant SKILL.md files and follow them.
 - In README.md, document which skills were used and how.
 """

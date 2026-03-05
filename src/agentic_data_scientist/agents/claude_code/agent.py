@@ -8,6 +8,7 @@ tasks and plans.
 import asyncio
 import logging
 import os
+import shutil
 from pathlib import Path
 from typing import Any, AsyncGenerator, Optional
 
@@ -48,72 +49,111 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 
-def _has_local_skills(skills_dir: Path) -> bool:
-    """Return True if at least one skill directory already exists."""
-    return any(entry.is_dir() for entry in skills_dir.iterdir())
+def _skills_scope_name() -> str:
+    """Return scoped skills namespace under .claude/skills/."""
+    return os.getenv("ADS_SKILLS_SCOPE_NAME", "scientific-skills").strip() or "scientific-skills"
+
+
+def _skills_scope_dir(working_path: Path) -> Path:
+    return working_path / ".claude" / "skills" / _skills_scope_name()
+
+
+def _has_local_skills(scoped_skills_dir: Path) -> bool:
+    """Return True if at least one scoped skill directory already exists."""
+    if not scoped_skills_dir.exists():
+        return False
+    return any(entry.is_dir() for entry in scoped_skills_dir.iterdir())
+
+
+def _default_repo_root() -> Path:
+    # agent.py -> claude_code -> agents -> agentic_data_scientist -> src -> repo_root
+    return Path(__file__).resolve().parents[4]
+
+
+def _resolve_source_dir(working_path: Path) -> Path | None:
+    """
+    Resolve local scientific skills source directory.
+
+    Priority:
+    1) ADS_LOCAL_SKILLS_SOURCE (absolute or relative)
+    2) <working_dir>/scientific-skills
+    3) <cwd>/scientific-skills
+    4) <repo_root>/scientific-skills
+    """
+    env_source = os.getenv("ADS_LOCAL_SKILLS_SOURCE", "").strip()
+    candidates: list[Path] = []
+    if env_source:
+        path = Path(env_source)
+        if path.is_absolute():
+            candidates.append(path)
+        else:
+            candidates.append((Path.cwd() / path).resolve())
+            candidates.append((working_path / path).resolve())
+    candidates.append((working_path / "scientific-skills").resolve())
+    candidates.append((Path.cwd() / "scientific-skills").resolve())
+    candidates.append((_default_repo_root() / "scientific-skills").resolve())
+
+    for candidate in candidates:
+        if candidate.exists() and candidate.is_dir():
+            return candidate
+    return None
 
 
 def setup_skills_directory(working_dir: str) -> None:
     """
-    Clone claude-scientific-skills repository and copy skills to .claude/skills/.
+    Copy local scientific skills into scoped path.
 
-    The repository contains a single 'scientific-skills' directory with all skills.
+    Default destination:
+    - .claude/skills/scientific-skills/
 
     Parameters
     ----------
     working_dir : str
         Working directory to set up skills in
     """
-    import shutil
-    import subprocess
-    import tempfile
-
     working_path = Path(working_dir)
-    skills_dir = working_path / ".claude" / "skills"
-    skills_dir.mkdir(parents=True, exist_ok=True)
+    skills_root_dir = working_path / ".claude" / "skills"
+    scoped_skills_dir = _skills_scope_dir(working_path)
+    skills_root_dir.mkdir(parents=True, exist_ok=True)
+    scoped_skills_dir.mkdir(parents=True, exist_ok=True)
 
-    # Fast path: reuse already installed skills.
-    if _has_local_skills(skills_dir):
-        logger.info(f"[Claude Code] Reusing existing skills in {skills_dir}")
+    # Fast path: reuse already installed scoped skills.
+    if _has_local_skills(scoped_skills_dir):
+        logger.info(f"[Claude Code] Reusing existing scoped skills in {scoped_skills_dir}")
         return
 
-    # Respect network-off mode: skip remote skill bootstrap.
-    if is_network_disabled():
-        logger.info("[Claude Code] Network disabled - skipping scientific skills bootstrap")
+    source_path = _resolve_source_dir(working_path)
+    if source_path is None:
+        logger.warning(
+            "[Claude Code] Local scientific skills source not found. "
+            "Set ADS_LOCAL_SKILLS_SOURCE or create ./scientific-skills."
+        )
         return
 
-    # Clone repo to temp directory
-    with tempfile.TemporaryDirectory() as tmpdir:
-        repo_url = "https://github.com/K-Dense-AI/claude-scientific-skills.git"
-        tmp_repo = Path(tmpdir) / "claude-scientific-skills"
-
-        try:
-            logger.info(f"[Claude Code] Cloning claude-scientific-skills to {tmp_repo}")
-            subprocess.run(
-                ["git", "clone", "--depth", "1", repo_url, str(tmp_repo)], check=True, capture_output=True, timeout=60
-            )
-
-            # Copy scientific-skills directory
-            source_path = tmp_repo / "scientific-skills"
-            if source_path.exists():
-                # Copy each skill directory
-                for skill_dir in source_path.iterdir():
-                    if skill_dir.is_dir():
-                        dest_path = skills_dir / skill_dir.name
-                        if dest_path.exists():
-                            shutil.rmtree(dest_path)
-                        shutil.copytree(skill_dir, dest_path)
+    try:
+        # Reset scoped destination before copy to avoid stale skills.
+        for entry in scoped_skills_dir.iterdir():
+            if entry.is_dir():
+                shutil.rmtree(entry, ignore_errors=True)
             else:
-                logger.warning(f"[Claude Code] scientific-skills directory not found in {tmp_repo}")
+                entry.unlink(missing_ok=True)
 
-            logger.info(f"[Claude Code] Skills setup complete in {skills_dir}")
+        copied = 0
+        for skill_dir in source_path.iterdir():
+            if not skill_dir.is_dir():
+                continue
+            if not (skill_dir / "SKILL.md").exists():
+                continue
+            dest_path = scoped_skills_dir / skill_dir.name
+            shutil.copytree(skill_dir, dest_path)
+            copied += 1
 
-        except subprocess.TimeoutExpired:
-            logger.warning("[Claude Code] Git clone timed out - skills may not be available")
-        except subprocess.CalledProcessError as e:
-            logger.warning(f"[Claude Code] Failed to clone skills repo: {e.stderr.decode()}")
-        except Exception as e:
-            logger.warning(f"[Claude Code] Error setting up skills: {e}")
+        if copied <= 0:
+            logger.warning(f"[Claude Code] No skill directories with SKILL.md found in {source_path}")
+            return
+        logger.info(f"[Claude Code] Skills copied from {source_path} to {scoped_skills_dir} (count={copied})")
+    except Exception as e:
+        logger.warning(f"[Claude Code] Error copying local skills: {e}")
 
 
 def setup_working_directory(working_dir: str) -> None:
@@ -416,7 +456,7 @@ Requirements:
             env["ANTHROPIC_MODEL"] = self.model
 
             # Create options for Claude Agent SDK
-            # Skills are loaded from .claude/skills/ via setting_sources
+            # Skills are loaded from .claude/skills/scientific-skills/ via setting_sources
             # MCP servers are loaded from .claude/settings.json via setting_sources
             options = ClaudeAgentOptions(
                 cwd=working_dir,

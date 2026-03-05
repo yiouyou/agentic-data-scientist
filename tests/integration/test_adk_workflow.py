@@ -40,7 +40,24 @@ class TestADKWorkflow:
             agent = create_agent(working_dir=str(case_dir))
             # SequentialAgent has sub_agents
             assert hasattr(agent, 'sub_agents')
-            assert len(agent.sub_agents) == 4  # planning_loop, parser, orchestrator, summary
+            assert len(agent.sub_agents) == 5  # planning_loop, selector, parser, orchestrator, summary
+        finally:
+            shutil.rmtree(case_dir, ignore_errors=True)
+
+    def test_agent_plan_only_mode(self, monkeypatch):
+        """ADS_PLAN_ONLY should construct planning-only root workflow."""
+        from agentic_data_scientist.agents.adk import create_agent
+
+        case_dir = _new_case_dir("plan_only")
+        monkeypatch.setenv("ADS_PLAN_ONLY", "true")
+        try:
+            agent = create_agent(working_dir=str(case_dir))
+            assert hasattr(agent, "sub_agents")
+            assert [sub_agent.name for sub_agent in agent.sub_agents] == [
+                "high_level_planning_loop",
+                "plan_candidate_selector",
+                "high_level_plan_parser",
+            ]
         finally:
             shutil.rmtree(case_dir, ignore_errors=True)
 

@@ -213,6 +213,11 @@ def main() -> int:
     parser.add_argument("--task-id", action="append", default=[], help="Run only specific task id(s), repeatable.")
     parser.add_argument("--max-tasks", type=int, default=0, help="Run at most N selected tasks (0 means all).")
     parser.add_argument("--execute", action="store_true", help="Execute commands. Default is dry-run only.")
+    parser.add_argument(
+        "--plan-only",
+        action="store_true",
+        help="Set ADS_PLAN_ONLY=true for query tasks to benchmark planning without execution stage.",
+    )
     parser.add_argument("--timeout-sec", type=int, default=1200, help="Per-run timeout in seconds.")
     parser.add_argument("--cli-bin", default="agentic-data-scientist", help="CLI binary name.")
     parser.add_argument("--no-uv", action="store_true", help="Do not prefix commands with 'uv run'.")
@@ -277,9 +282,17 @@ def main() -> int:
             task_env = task.get("env", {}) or {}
             for key, value in task_env.items():
                 env[str(key)] = str(value)
+            if args.plan_only and str(task.get("type", "query")).strip().lower() != "history_replay":
+                env["ADS_PLAN_ONLY"] = "true"
 
             command_file = run_dir / "command.txt"
             command_file.write_text(" ".join(command), encoding="utf-8")
+            env_file = run_dir / "env_overrides.json"
+            env_overrides = {str(k): str(v) for k, v in task_env.items()}
+            if args.plan_only and str(task.get("type", "query")).strip().lower() != "history_replay":
+                env_overrides["ADS_PLAN_ONLY"] = "true"
+            if env_overrides:
+                env_file.write_text(json.dumps(env_overrides, ensure_ascii=True, indent=2), encoding="utf-8")
 
             if not args.execute:
                 records.append(

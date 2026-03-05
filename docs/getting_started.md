@@ -67,6 +67,7 @@ ANTHROPIC_API_KEY=your_anthropic_key_here
 # ADS_PLAN_SELECTOR_INTENT_REGEXES=rna-?seq,variant,wgs
 # ADS_PLAN_SELECTOR_ROLLOUT_SALT=
 # ADS_PLAN_RANK_MIN_SWITCH_MARGIN=0.12
+# ADS_PLAN_ONLY=false
 # CODEX_COMMAND_TEMPLATE="codex exec --model {model}"
 # OPENCODE_COMMAND_TEMPLATE="opencode run --model {model}"
 ```

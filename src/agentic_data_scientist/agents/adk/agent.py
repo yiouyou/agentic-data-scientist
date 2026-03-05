@@ -7,6 +7,7 @@ implementation, and verification agents.
 
 import logging
 import json
+import os
 import re
 import warnings
 from pathlib import Path
@@ -55,6 +56,11 @@ warnings.filterwarnings("ignore", category=UserWarning, module="google.adk.tools
 
 # Suppress verbose JSON Schema conversion logs
 logging.getLogger("google_genai.types").setLevel(logging.WARNING)
+
+
+def _is_plan_only_enabled() -> bool:
+    raw = os.getenv("ADS_PLAN_ONLY", "false").strip().lower()
+    return raw not in {"0", "false", "off", "no"}
 
 
 # ========================= Output Schemas (Pydantic BaseModel) =========================
@@ -1022,18 +1028,29 @@ def create_agent(
     # ------------------------- Root Workflow -------------------------
 
     logger.info("[AgenticDS] Creating root workflow")
-
-    workflow = SequentialAgent(
-        name="agentic_data_scientist_workflow",
-        description="Complete Agentic Data Scientist workflow with adaptive stage-wise implementation.",
-        sub_agents=[
-            high_level_planning_loop,
-            plan_candidate_selector,
-            high_level_plan_parser,
-            stage_orchestrator,
-            summary_agent,
-        ],
-    )
+    if _is_plan_only_enabled():
+        logger.info("[AgenticDS] ADS_PLAN_ONLY enabled: execution loop and summary stage are skipped")
+        workflow = SequentialAgent(
+            name="agentic_data_scientist_workflow",
+            description="Planning-only workflow: generates and parses high-level plan without implementation.",
+            sub_agents=[
+                high_level_planning_loop,
+                plan_candidate_selector,
+                high_level_plan_parser,
+            ],
+        )
+    else:
+        workflow = SequentialAgent(
+            name="agentic_data_scientist_workflow",
+            description="Complete Agentic Data Scientist workflow with adaptive stage-wise implementation.",
+            sub_agents=[
+                high_level_planning_loop,
+                plan_candidate_selector,
+                high_level_plan_parser,
+                stage_orchestrator,
+                summary_agent,
+            ],
+        )
 
     logger.info("[AgenticDS] Agent creation complete")
 

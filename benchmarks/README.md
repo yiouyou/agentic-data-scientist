@@ -21,9 +21,16 @@ Execute selected tasks:
 uv run python scripts/run_benchmark.py --execute --task-id bio_rnaseq_nfcore_route --task-id history_replay_report
 ```
 
+Planning-only benchmark mode (skip implementation stage in orchestrated workflow):
+
+```bash
+uv run python scripts/run_benchmark.py --execute --plan-only
+```
+
 ## Notes
 
 - Default output root is `.tmp/benchmark_runs/<timestamp>/`.
 - Each run stores `command.txt`, and when executed also stores `stdout.txt` and `stderr.txt`.
 - A consolidated `summary.json` and `summary.md` are generated per suite run.
+- For each run, `env_overrides.json` is written when task/env overrides are applied.
 - `history_replay_report` task requires prior history data to produce non-zero records.

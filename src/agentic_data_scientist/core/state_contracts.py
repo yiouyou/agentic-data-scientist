@@ -22,6 +22,8 @@ class StateKeys:
     HIGH_LEVEL_SUCCESS_CRITERIA = "high_level_success_criteria"
     CURRENT_STAGE = "current_stage"
     CURRENT_STAGE_INDEX = "current_stage_index"
+    CURRENT_STAGE_SKILL_RECOMMENDATIONS = "current_stage_skill_recommendations"
+    CURRENT_STAGE_PARALLEL_SUBTASKS = "current_stage_parallel_subtasks"
     STAGE_IMPLEMENTATIONS = "stage_implementations"
 
     HIGH_LEVEL_PLAN = "high_level_plan"
@@ -29,6 +31,7 @@ class StateKeys:
     PLANNER_HISTORY_SIGNALS = "planner_history_signals"
     PLAN_CANDIDATES = "plan_candidates"
     PLAN_SELECTION_TRACE = "plan_selection_trace"
+    PLANNER_SKILL_ADVICE = "planner_skill_advice"
     PLAN_REVIEW_FEEDBACK = "plan_review_feedback"
     PARSED_PLAN_OUTPUT = "parsed_plan_output"
     CRITERIA_CHECKER_OUTPUT = "criteria_checker_output"
@@ -83,6 +86,7 @@ def make_stage_record(
     inputs_required: Optional[List[str]] = None,
     outputs_produced: Optional[List[str]] = None,
     evidence_refs: Optional[List[str]] = None,
+    subtasks: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Create a normalized stage record."""
     status = StageStatus.APPROVED if completed else StageStatus.PENDING
@@ -99,6 +103,7 @@ def make_stage_record(
         "inputs_required": list(inputs_required or []),
         "outputs_produced": list(outputs_produced or []),
         "evidence_refs": list(evidence_refs or []),
+        "subtasks": list(subtasks or []),
     }
 
 

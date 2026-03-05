@@ -353,8 +353,31 @@ ANTHROPIC_API_KEY=your_key_here
 # ADS_PLAN_SELECTOR_ROLLOUT_SALT=
 # ADS_PLAN_RANK_MIN_SWITCH_MARGIN=0.12
 # ADS_PLAN_ONLY=false
+# ADS_PLANNER_SKILL_ADVICE_ENABLED=true
+# ADS_PLANNER_SKILL_TOPK=8
+# ADS_PLANNER_SKILL_MIN_SCORE=0.12
 # ADS_LOCAL_SKILLS_SOURCE="scientific-skills"
 # ADS_SKILLS_SCOPE_NAME="scientific-skills"
+# ADS_STAGE_SKILL_HINTS_ENABLED=true
+# ADS_STAGE_SKILL_TOPK=5
+# ADS_STAGE_SKILL_MIN_SCORE=0.12
+# ADS_STAGE_PARALLEL_HINTS_ENABLED=true
+# ADS_STAGE_PARALLEL_SUBTASK_MAX=5
+# ADS_SKILL_HYBRID_BLEND_ALPHA=0.65
+# ADS_SKILL_MMR_ENABLED=true
+# ADS_SKILL_MMR_LAMBDA=0.78
+# ADS_SKILL_CANDIDATE_POOL=20
+# ADS_SKILL_VECTOR_DIM=256
+# ADS_EMBEDDING_ENABLED=false
+# ADS_EMBEDDING_PRIMARY_PROVIDER=gemini
+# ADS_EMBEDDING_FALLBACK_PROVIDER=jina
+# ADS_EMBEDDING_TIMEOUT_SECONDS=20
+# ADS_EMBEDDING_CANDIDATE_POOL=20
+# ADS_EMBEDDING_CACHE_SIZE=4096
+# ADS_GEMINI_EMBEDDING_MODEL=gemini-embedding-001
+# ADS_JINA_EMBEDDING_MODEL=jina-embeddings-v5-text-small
+# ADS_JINA_API_BASE=https://api.jina.ai/v1
+# ADS_JINA_API_KEY=your_jina_api_key_here
 # CODEX_COMMAND_TEMPLATE="codex exec --model {model}"
 # OPENCODE_COMMAND_TEMPLATE="opencode run --model {model}"
 ```
@@ -379,8 +402,11 @@ agentic-data-scientist --history-replay --history-replay-limit 200
 
 **Scientific Skills** (coding agent):
 - Skills are copied from local `scientific-skills/` into `.claude/skills/scientific-skills/` (reused across coding executors)
+- Planner receives advisory Top-K skill inventory signals to improve stage design (does not hard-code tool names into plans)
+- Skill retrieval uses hybrid lexical+vector scoring with optional MMR diversification
+- Optional semantic embeddings: Gemini primary (`gemini-embedding-001`) with Jina fallback (`jina-embeddings-v5-text-small`)
 - Claude Code executor uses skill loading from scoped path under `.claude/skills/`
-- Codex/OpenCode executors are instructed to discover and apply `SKILL.md` files from the scoped path
+- Codex/OpenCode executors receive stage-level Top-K skill hints and parallel-subtask candidates before execution
 - Source: [claude-scientific-skills](https://github.com/yiouyou/claude-scientific-skills)
 
 All tools are sandboxed to the working directory for security.

@@ -328,3 +328,33 @@ class TestDataScientist:
         assert signals.get("hot", {}).get("run_count") == 12
         assert store.calls == 1
         ds.cleanup()
+
+    def test_build_planner_skill_advice_disabled(self, monkeypatch):
+        """Planner skill advice should be disabled by env switch."""
+        ds = DataScientist(agent_type="adk")
+        monkeypatch.setenv("ADS_PLANNER_SKILL_ADVICE_ENABLED", "false")
+        advice = ds._build_planner_skill_advice(user_message="rnaseq differential expression")
+        assert advice == ""
+        ds.cleanup()
+
+    def test_build_planner_skill_advice_from_local_skills(self, monkeypatch):
+        """Planner skill advice should return top-matched skills when available."""
+        root = Path(".tmp") / f"unit_core_api_skills_{uuid.uuid4().hex[:8]}"
+        source = root / "scientific-skills"
+        skill_dir = source / "rna-seq-analysis"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            "# RNA-seq Analysis\nDifferential expression and quality control workflow.",
+            encoding="utf-8",
+        )
+
+        ds = DataScientist(agent_type="adk")
+        ds.working_dir = root
+        monkeypatch.setenv("ADS_PLANNER_SKILL_ADVICE_ENABLED", "true")
+        monkeypatch.setenv("ADS_PLANNER_SKILL_TOPK", "3")
+        monkeypatch.setenv("ADS_LOCAL_SKILLS_SOURCE", str(source))
+
+        advice = ds._build_planner_skill_advice(user_message="Need RNA-seq differential expression")
+        assert "Top matched scientific skills" in advice
+        assert "rna-seq-analysis" in advice
+        ds.cleanup()

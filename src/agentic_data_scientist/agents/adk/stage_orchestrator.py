@@ -7,6 +7,8 @@ remaining stages through reflection.
 """
 
 import logging
+import time
+from datetime import datetime
 from typing import Any, AsyncGenerator, Dict, List
 
 from google.adk.agents import BaseAgent, InvocationContext
@@ -67,6 +69,10 @@ def _append_stage_attempt_history(
     approved: bool,
     implementation_summary: str,
     review_reason: str | None = None,
+    status: str | None = None,
+    started_at: str | None = None,
+    finished_at: str | None = None,
+    duration_seconds: float | None = None,
 ) -> None:
     """Append a normalized stage attempt record to state history."""
     history = state.get(StateKeys.STAGE_IMPLEMENTATIONS, [])
@@ -79,6 +85,14 @@ def _append_stage_attempt_history(
     }
     if review_reason:
         entry["review_reason"] = review_reason
+    if status:
+        entry["status"] = status
+    if started_at:
+        entry["started_at"] = started_at
+    if finished_at:
+        entry["finished_at"] = finished_at
+    if duration_seconds is not None:
+        entry["duration_seconds"] = max(0.0, float(duration_seconds))
     history.append(entry)
     state[StateKeys.STAGE_IMPLEMENTATIONS] = history
 
@@ -359,6 +373,8 @@ class StageOrchestratorAgent(BaseAgent):
             logger.info(
                 f"[StageOrchestrator] 📍 Starting stage {stage_idx}: {next_stage['title']} (attempt {attempts})"
             )
+            attempt_started_at = datetime.now()
+            attempt_started_clock = time.perf_counter()
 
             # Create stage start event
             stage_start_event = Event(
@@ -413,6 +429,8 @@ class StageOrchestratorAgent(BaseAgent):
                     f"[StageOrchestrator] Implementation loop failed for stage {stage_idx}: {e}",
                     exc_info=True,
                 )
+                attempt_finished_at = datetime.now()
+                attempt_duration_seconds = time.perf_counter() - attempt_started_clock
                 error_event = Event(
                     author=self.name,
                     content=types.Content(
@@ -430,7 +448,20 @@ class StageOrchestratorAgent(BaseAgent):
                 yield error_event
                 # Skip this stage and continue to next
                 set_stage_status(next_stage, StageStatus.FAILED)
+                next_stage["implementation_result"] = state.get(StateKeys.IMPLEMENTATION_SUMMARY, "")
                 state[StateKeys.HIGH_LEVEL_STAGES] = stages
+                _append_stage_attempt_history(
+                    state,
+                    next_stage,
+                    attempt=attempts,
+                    approved=False,
+                    implementation_summary=next_stage["implementation_result"],
+                    review_reason=f"implementation_loop_error: {str(e)}",
+                    status=StageStatus.FAILED,
+                    started_at=attempt_started_at.isoformat(timespec="milliseconds"),
+                    finished_at=attempt_finished_at.isoformat(timespec="milliseconds"),
+                    duration_seconds=attempt_duration_seconds,
+                )
                 continue
 
             # Read implementation review confirmation decision from state.
@@ -444,6 +475,8 @@ class StageOrchestratorAgent(BaseAgent):
                 decision_reason = decision.get("reason", decision_reason)
 
             if not approved:
+                attempt_finished_at = datetime.now()
+                attempt_duration_seconds = time.perf_counter() - attempt_started_clock
                 set_stage_status(next_stage, StageStatus.RETRYING)
                 next_stage["implementation_result"] = state.get(StateKeys.IMPLEMENTATION_SUMMARY, "")
                 state[StateKeys.HIGH_LEVEL_STAGES] = stages
@@ -454,6 +487,10 @@ class StageOrchestratorAgent(BaseAgent):
                     approved=False,
                     implementation_summary=next_stage["implementation_result"],
                     review_reason=decision_reason,
+                    status=StageStatus.RETRYING,
+                    started_at=attempt_started_at.isoformat(timespec="milliseconds"),
+                    finished_at=attempt_finished_at.isoformat(timespec="milliseconds"),
+                    duration_seconds=attempt_duration_seconds,
                 )
 
                 retry_event = Event(
@@ -477,6 +514,8 @@ class StageOrchestratorAgent(BaseAgent):
                 continue
 
             # Store implementation result (but don't mark as completed yet)
+            attempt_finished_at = datetime.now()
+            attempt_duration_seconds = time.perf_counter() - attempt_started_clock
             next_stage["implementation_result"] = state.get(StateKeys.IMPLEMENTATION_SUMMARY, "")
 
             # Add to completed stages history BEFORE running checker/reflector
@@ -487,6 +526,10 @@ class StageOrchestratorAgent(BaseAgent):
                 attempt=attempts,
                 approved=True,
                 implementation_summary=next_stage["implementation_result"],
+                status=StageStatus.APPROVED,
+                started_at=attempt_started_at.isoformat(timespec="milliseconds"),
+                finished_at=attempt_finished_at.isoformat(timespec="milliseconds"),
+                duration_seconds=attempt_duration_seconds,
             )
 
             # === Run Success Criteria Checker ===

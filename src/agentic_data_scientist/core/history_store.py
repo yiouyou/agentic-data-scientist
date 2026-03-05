@@ -157,6 +157,9 @@ class HistoryStore:
                         status TEXT,
                         execution_mode TEXT,
                         workflow_id TEXT,
+                        attempt_started_at TEXT,
+                        attempt_finished_at TEXT,
+                        attempt_duration_seconds REAL,
                         implementation_summary TEXT,
                         review_reason TEXT,
                         created_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -183,7 +186,22 @@ class HistoryStore:
                       ON decision_trace(run_id);
                     """
                 )
+                self._ensure_stage_outcome_migrations(conn)
             self._initialized = True
+
+    def _ensure_stage_outcome_migrations(self, conn: sqlite3.Connection) -> None:
+        """Backfill new stage_outcome columns for existing DBs."""
+        columns = {
+            str(row[1]) for row in conn.execute("PRAGMA table_info(stage_outcome)").fetchall() if row
+        }
+        migrations: Dict[str, str] = {
+            "attempt_started_at": "ALTER TABLE stage_outcome ADD COLUMN attempt_started_at TEXT",
+            "attempt_finished_at": "ALTER TABLE stage_outcome ADD COLUMN attempt_finished_at TEXT",
+            "attempt_duration_seconds": "ALTER TABLE stage_outcome ADD COLUMN attempt_duration_seconds REAL",
+        }
+        for column_name, ddl in migrations.items():
+            if column_name not in columns:
+                conn.execute(ddl)
 
     def record_run(
         self,
@@ -248,6 +266,12 @@ class HistoryStore:
         for attempt in stage_attempts:
             stage_index = int(attempt.get("stage_index", -1))
             stage = stages_by_index.get(stage_index, {})
+            attempt_status = attempt.get("status") or stage.get("status")
+            attempt_started_at = attempt.get("started_at")
+            attempt_finished_at = attempt.get("finished_at")
+            attempt_duration_seconds = attempt.get("duration_seconds")
+            if attempt_duration_seconds is not None:
+                attempt_duration_seconds = _safe_float(attempt_duration_seconds, 0.0)
             rows.append(
                 (
                     run_id,
@@ -256,9 +280,12 @@ class HistoryStore:
                     stage.get("title") or attempt.get("stage_title"),
                     int(attempt.get("attempt", 0)),
                     1 if bool(attempt.get("approved", False)) else 0,
-                    stage.get("status"),
+                    attempt_status,
                     stage.get("execution_mode"),
                     stage.get("workflow_id"),
+                    attempt_started_at,
+                    attempt_finished_at,
+                    attempt_duration_seconds,
                     _truncate_text(attempt.get("implementation_summary"), max_chars=4000),
                     _truncate_text(attempt.get("review_reason"), max_chars=2000),
                 )
@@ -269,9 +296,11 @@ class HistoryStore:
                 """
                 INSERT INTO stage_outcome (
                     run_id, stage_index, stage_id, stage_title, attempt, approved,
-                    status, execution_mode, workflow_id, implementation_summary, review_reason
+                    status, execution_mode, workflow_id,
+                    attempt_started_at, attempt_finished_at, attempt_duration_seconds,
+                    implementation_summary, review_reason
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 rows,
             )

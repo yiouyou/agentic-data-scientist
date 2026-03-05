@@ -63,6 +63,13 @@ The content section above will be interpolated with the user's full request. Tre
 If historical signals are present, use them only as weak guidance to improve sequencing, dependency clarity, and retry avoidance.
 Never let historical signals override the current user request or introduce irrelevant stages.
 
+## Skill Inventory Signals (Advisory Only)
+
+{planner_skill_advice?}
+
+Use skill inventory signals as internal planning support only.
+Do not mention specific tool or skill names in the final plan text.
+
 # Example
 
 **User Request:** *"I have sales data from 2023 at /data/sales_2023.csv. Find the top-performing products and analyze seasonal trends in different regions."*

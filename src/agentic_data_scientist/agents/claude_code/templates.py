@@ -228,12 +228,13 @@ CRITICAL REQUIREMENTS:
 1. Discover and use available Skills for specialized tasks
 2. Complete ALL aspects of this stage - no partial execution
 3. Work through multiple related subtasks in this session (don't exit after one tiny task)
-4. Consider how this stage fits into the overall analysis plan above
-5. Build upon any completed stages mentioned above
-6. Save all outputs with descriptive filenames using {working_dir}/ prefix
-7. Print progress updates after each step
-8. Update README.md incrementally - DO NOT create separate summary files
-9. Document which Skills were used in README
+4. If subtasks are independent, execute them in parallel where safe, then merge outputs
+5. Consider how this stage fits into the overall analysis plan above
+6. Build upon any completed stages mentioned above
+7. Save all outputs with descriptive filenames using {working_dir}/ prefix
+8. Print progress updates after each step
+9. Update README.md incrementally - DO NOT create separate summary files
+10. Document which Skills were used in README
 
 FILE HANDLING CONSTRAINTS (CRITICAL):
 - DO NOT read files >1MB directly - use head/tail or pandas with nrows parameter

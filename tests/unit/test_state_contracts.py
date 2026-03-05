@@ -63,6 +63,7 @@ def test_stage_and_criterion_record_builders():
     assert stage["inputs_required"] == []
     assert stage["outputs_produced"] == []
     assert stage["evidence_refs"] == []
+    assert stage["subtasks"] == []
 
     criterion = make_success_criterion_record(index=0, criteria="C")
     assert criterion["index"] == 0

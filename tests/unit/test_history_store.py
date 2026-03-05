@@ -36,6 +36,10 @@ def test_history_store_writes_run_stage_and_decision_rows():
                 "stage_index": 0,
                 "attempt": 1,
                 "approved": True,
+                "status": "approved",
+                "started_at": "2026-03-04T10:00:10.000",
+                "finished_at": "2026-03-04T10:00:40.000",
+                "duration_seconds": 30.0,
                 "implementation_summary": "ok",
                 "review_reason": "pass",
             }
@@ -69,12 +73,86 @@ def test_history_store_writes_run_stage_and_decision_rows():
         run_count = conn.execute("SELECT COUNT(*) FROM run_summary").fetchone()[0]
         stage_count = conn.execute("SELECT COUNT(*) FROM stage_outcome").fetchone()[0]
         decision_count = conn.execute("SELECT COUNT(*) FROM decision_trace").fetchone()[0]
+        stage_row = conn.execute(
+            "SELECT status, attempt_started_at, attempt_finished_at, attempt_duration_seconds "
+            "FROM stage_outcome WHERE run_id='run-1' LIMIT 1"
+        ).fetchone()
     finally:
         conn.close()
 
     assert run_count == 1
     assert stage_count == 1
     assert decision_count == 1
+    assert stage_row is not None
+    assert stage_row[0] == "approved"
+    assert stage_row[1] == "2026-03-04T10:00:10.000"
+    assert stage_row[2] == "2026-03-04T10:00:40.000"
+    assert float(stage_row[3]) == 30.0
+
+
+def test_history_store_migrates_stage_outcome_table_with_timing_columns():
+    db_path = Path.cwd() / f".history_test_migrate_{uuid.uuid4().hex}.sqlite3"
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE stage_outcome (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                stage_index INTEGER NOT NULL,
+                stage_id TEXT,
+                stage_title TEXT,
+                attempt INTEGER NOT NULL,
+                approved INTEGER NOT NULL,
+                status TEXT,
+                execution_mode TEXT,
+                workflow_id TEXT,
+                implementation_summary TEXT,
+                review_reason TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    store = HistoryStore(db_path)
+    store.record_stage_outcomes(
+        run_id="run-migrate-1",
+        stage_attempts=[
+            {
+                "stage_index": 0,
+                "attempt": 1,
+                "approved": True,
+                "status": "approved",
+                "started_at": "2026-03-04T10:00:00.000",
+                "finished_at": "2026-03-04T10:00:02.500",
+                "duration_seconds": 2.5,
+                "implementation_summary": "ok",
+            }
+        ],
+        stages_by_index={0: {"stage_id": "s1", "title": "Stage 1"}},
+    )
+
+    conn = sqlite3.connect(db_path)
+    try:
+        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(stage_outcome)").fetchall()}
+        row = conn.execute(
+            "SELECT attempt_started_at, attempt_finished_at, attempt_duration_seconds "
+            "FROM stage_outcome WHERE run_id='run-migrate-1' LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert "attempt_started_at" in columns
+    assert "attempt_finished_at" in columns
+    assert "attempt_duration_seconds" in columns
+    assert row is not None
+    assert row[0] == "2026-03-04T10:00:00.000"
+    assert row[1] == "2026-03-04T10:00:02.500"
+    assert float(row[2]) == 2.5
 
 
 def test_create_history_store_from_env_disable(monkeypatch):

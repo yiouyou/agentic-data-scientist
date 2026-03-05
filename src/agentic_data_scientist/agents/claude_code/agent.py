@@ -27,6 +27,7 @@ from agentic_data_scientist.core.llm_circuit_breaker import (
     get_llm_circuit_breaker,
     is_retryable_llm_error,
 )
+from agentic_data_scientist.core.stage_hints import render_stage_info
 from agentic_data_scientist.core.state_contracts import StateKeys
 
 
@@ -380,10 +381,7 @@ class ClaudeCodeAgent(Agent):
 
             # Format stage information for the prompt
             if current_stage:
-                stage_info = (
-                    f"Stage {current_stage.get('index', 0) + 1}: {current_stage.get('title', 'Unknown')}\n\n"
-                    f"{current_stage.get('description', '')}"
-                )
+                stage_info = render_stage_info(current_stage)
             else:
                 stage_info = ""
 

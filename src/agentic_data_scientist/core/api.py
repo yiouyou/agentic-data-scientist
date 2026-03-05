@@ -30,6 +30,7 @@ from agentic_data_scientist.core.events import (
     event_to_dict,
 )
 from agentic_data_scientist.core.history_store import create_history_store_from_env
+from agentic_data_scientist.core.skill_registry import discover_skills, format_skill_advice, recommend_skills
 from agentic_data_scientist.core.state_contracts import StateKeys, build_initial_state_delta
 
 
@@ -207,6 +208,41 @@ class DataScientist:
         except Exception as signal_error:
             logger.warning(f"Failed to build planner history signals: {signal_error}")
             return {}
+
+    def _planner_skill_advice_enabled(self) -> bool:
+        raw = os.getenv("ADS_PLANNER_SKILL_ADVICE_ENABLED", "true").strip().lower()
+        return raw not in {"0", "false", "off", "no"}
+
+    def _build_planner_skill_advice(self, *, user_message: str) -> str:
+        """Build skill-inventory guidance for plan generation."""
+        if not self._planner_skill_advice_enabled():
+            return ""
+        if not user_message.strip():
+            return ""
+
+        top_k_raw = os.getenv("ADS_PLANNER_SKILL_TOPK", "8").strip()
+        min_score_raw = os.getenv("ADS_PLANNER_SKILL_MIN_SCORE", "0.12").strip()
+        try:
+            top_k = max(1, int(top_k_raw))
+        except Exception:
+            top_k = 8
+        try:
+            min_score = max(0.0, float(min_score_raw))
+        except Exception:
+            min_score = 0.12
+
+        try:
+            recommendations = recommend_skills(
+                query=user_message,
+                working_dir=str(self.working_dir),
+                top_k=top_k,
+                min_score=min_score,
+            )
+            inventory_count = len(discover_skills(working_dir=str(self.working_dir)))
+            return format_skill_advice(recommendations, total_skills=inventory_count)
+        except Exception as advice_error:
+            logger.warning(f"Failed to build planner skill advice: {advice_error}")
+            return ""
 
     def _collect_decision_traces(self, state: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Collect compact decision traces from canonical state keys."""
@@ -537,10 +573,12 @@ class DataScientist:
             session.state[StateKeys.LATEST_USER_INPUT] = message
             planner_signals = self._build_planner_history_signals(user_message=message)
             planner_advice = self._build_planner_history_advice(user_message=message)
+            planner_skill_advice = self._build_planner_skill_advice(user_message=message)
             session.state[StateKeys.PLANNER_HISTORY_SIGNALS] = (
                 json.dumps(planner_signals, ensure_ascii=True) if planner_signals else ""
             )
             session.state[StateKeys.PLANNER_HISTORY_ADVICE] = planner_advice
+            session.state[StateKeys.PLANNER_SKILL_ADVICE] = planner_skill_advice
 
             # Save files if provided
             file_info = self.save_files(files) if files else None
@@ -559,6 +597,8 @@ class DataScientist:
             )
             if session.state.get(StateKeys.PLANNER_HISTORY_ADVICE):
                 logger.info("[API] planner history advice injected for planning agents")
+            if session.state.get(StateKeys.PLANNER_SKILL_ADVICE):
+                logger.info("[API] planner skill advice injected for planning agents")
 
             if stream:
                 return self._stream_responses(message, full_prompt, start_time, run_id=run_id)

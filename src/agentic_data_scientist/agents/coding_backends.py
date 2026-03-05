@@ -18,12 +18,102 @@ from agentic_data_scientist.core.llm_circuit_breaker import (
     is_retryable_llm_error,
 )
 from agentic_data_scientist.core.llm_config import LLMProfile, SUPPORTED_CODING_EXECUTORS
+from agentic_data_scientist.core.skill_registry import recommend_skills
+from agentic_data_scientist.core.stage_hints import derive_parallel_subtasks, render_stage_info
 from agentic_data_scientist.core.state_contracts import StateKeys
 
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_CODING_EXECUTOR = "claude_code"
+
+
+def _env_enabled(name: str, default: bool = True) -> bool:
+    raw = os.getenv(name, "true" if default else "false").strip().lower()
+    return raw not in {"0", "false", "off", "no"}
+
+
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
+    raw = os.getenv(name, str(default)).strip()
+    try:
+        value = int(raw)
+    except Exception:
+        value = default
+    return max(minimum, value)
+
+
+def _env_float(name: str, default: float, minimum: float = 0.0) -> float:
+    raw = os.getenv(name, str(default)).strip()
+    try:
+        value = float(raw)
+    except Exception:
+        value = default
+    return max(minimum, value)
+
+
+def _resolve_delegate_working_dir(delegate: Agent) -> str | None:
+    working_dir = getattr(delegate, "_working_dir", None)
+    if isinstance(working_dir, str) and working_dir.strip():
+        return working_dir
+    return None
+
+
+def _build_stage_skill_query(stage: Mapping[str, Any], state: Mapping[str, Any]) -> str:
+    chunks = [
+        str(state.get(StateKeys.ORIGINAL_USER_INPUT, "")).strip(),
+        str(stage.get("title", "")).strip(),
+        str(stage.get("description", "")).strip(),
+    ]
+    for field in ("inputs_required", "outputs_produced", "evidence_refs"):
+        value = stage.get(field)
+        if isinstance(value, list):
+            chunks.extend(str(item).strip() for item in value if str(item).strip())
+    return "\n".join(chunk for chunk in chunks if chunk)
+
+
+def _inject_stage_execution_hints(
+    *,
+    stage: Mapping[str, Any],
+    state: Mapping[str, Any],
+    delegate: Agent,
+) -> Mapping[str, Any]:
+    stage_payload = dict(stage)
+    working_dir = _resolve_delegate_working_dir(delegate)
+
+    skill_recommendations: list[dict[str, Any]] = []
+    if _env_enabled("ADS_STAGE_SKILL_HINTS_ENABLED", default=True):
+        query = _build_stage_skill_query(stage_payload, state)
+        top_k = _env_int("ADS_STAGE_SKILL_TOPK", default=5, minimum=1)
+        min_score = _env_float("ADS_STAGE_SKILL_MIN_SCORE", default=0.12, minimum=0.0)
+        skill_recommendations = recommend_skills(
+            query=query,
+            working_dir=working_dir,
+            top_k=top_k,
+            min_score=min_score,
+        )
+        if skill_recommendations:
+            stage_payload["recommended_skills"] = skill_recommendations
+        else:
+            stage_payload.pop("recommended_skills", None)
+
+    parallel_subtasks: list[dict[str, Any]] = []
+    if _env_enabled("ADS_STAGE_PARALLEL_HINTS_ENABLED", default=True):
+        max_subtasks = _env_int("ADS_STAGE_PARALLEL_SUBTASK_MAX", default=5, minimum=1)
+        parallel_subtasks = derive_parallel_subtasks(
+            stage=stage_payload,
+            max_subtasks=max_subtasks,
+        )
+        if parallel_subtasks:
+            stage_payload["parallel_subtasks"] = parallel_subtasks
+        else:
+            stage_payload.pop("parallel_subtasks", None)
+
+    mutable_state = state if isinstance(state, dict) else None
+    if mutable_state is not None:
+        mutable_state[StateKeys.CURRENT_STAGE_SKILL_RECOMMENDATIONS] = skill_recommendations
+        mutable_state[StateKeys.CURRENT_STAGE_PARALLEL_SUBTASKS] = parallel_subtasks
+
+    return stage_payload
 
 
 def normalize_coding_executor(executor: str | None) -> str:
@@ -198,10 +288,7 @@ class ExternalCLICodeAgent(Agent):
         if current_stage:
             from agentic_data_scientist.agents.claude_code.templates import get_claude_context
 
-            stage_info = (
-                f"Stage {current_stage.get('index', 0) + 1}: {current_stage.get('title', 'Unknown')}\n\n"
-                f"{current_stage.get('description', '')}"
-            )
+            stage_info = render_stage_info(current_stage)
             prompt = get_claude_context(
                 implementation_plan=stage_info,
                 working_dir=working_dir,
@@ -246,6 +333,7 @@ SKILL EXECUTION MODE:
   - .claude/skills/scientific-skills/
 - Before implementing, inspect relevant SKILL.md files and follow them.
 - In README.md, document which skills were used and how.
+- If stage subtasks are independent, execute them in parallel where safe and then merge outputs.
 """
         return prompt + skill_guidance
 
@@ -493,16 +581,31 @@ class RoutedExecutionAgent(Agent):
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
         stage = ctx.session.state.get(StateKeys.CURRENT_STAGE)
         use_workflow = stage_uses_workflow_execution(stage)
+
+        if isinstance(stage, Mapping) and not use_workflow:
+            hinted_stage = _inject_stage_execution_hints(
+                stage=stage,
+                state=ctx.session.state,
+                delegate=self._skill_executor,
+            )
+            if isinstance(ctx.session.state, dict):
+                ctx.session.state[StateKeys.CURRENT_STAGE] = dict(hinted_stage)
+            stage = hinted_stage
+
         delegate = self._workflow_executor if use_workflow else self._skill_executor
 
         route_label = "workflow executor" if use_workflow else "skill executor"
+        stage_id = ""
+        if isinstance(stage, Mapping):
+            stage_id = str(stage.get("stage_id", "")).strip()
+        stage_suffix = f" [stage_id={stage_id}]" if stage_id else ""
         yield Event(
             author=self.name,
             content=types.Content(
                 role="model",
                 parts=[
                     types.Part.from_text(
-                        text=f"Execution routing: {route_label} ({delegate.name})."
+                        text=f"Execution routing: {route_label} ({delegate.name}).{stage_suffix}"
                     )
                 ],
             ),

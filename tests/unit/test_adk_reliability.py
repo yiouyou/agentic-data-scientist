@@ -222,11 +222,22 @@ async def test_stage_orchestrator_requires_review_approval_before_completion():
         pass
 
     stage = session.state[StateKeys.HIGH_LEVEL_STAGES][0]
+    attempts = session.state[StateKeys.STAGE_IMPLEMENTATIONS]
     assert implementation_agent.calls >= 2
     assert criteria_checker_agent.calls == 1
     assert stage["completed"] is True
     assert stage["status"] == StageStatus.APPROVED
     assert stage["attempts"] >= 2
+    assert len(attempts) >= 2
+    for attempt in attempts:
+        assert attempt.get("started_at")
+        assert attempt.get("finished_at")
+        assert float(attempt.get("duration_seconds", 0.0)) >= 0.0
+        assert attempt.get("status") in {
+            StageStatus.RETRYING,
+            StageStatus.APPROVED,
+            StageStatus.FAILED,
+        }
 
 
 @pytest.mark.asyncio

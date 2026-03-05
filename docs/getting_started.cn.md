@@ -14,7 +14,7 @@ uvx agentic-data-scientist "your query here"
 
 ## 前置条件
 
-- Python 3.12 或更高版本
+- Python 3.12 或 3.13
 - 至少安装一种编码执行主体 CLI：
   - Claude Code（需要 Node.js）
   - Codex CLI（`codex`）

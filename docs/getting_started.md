@@ -14,7 +14,7 @@ uvx agentic-data-scientist "your query here"
 
 ## Prerequisites
 
-- Python 3.12 or later
+- Python 3.12 or 3.13
 - At least one coding executor CLI:
   - Claude Code (requires Node.js)
   - Codex CLI (`codex`)

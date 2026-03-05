@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/yiouyou/agentic-data-scientist/pulls)
-[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.12 | 3.13](https://img.shields.io/badge/python-3.12%20%7C%203.13-blue.svg)](https://www.python.org/downloads/)
 [![PyPI version](https://badge.fury.io/py/agentic-data-scientist.svg?icon=si%3Apython)](https://badge.fury.io/py/agentic-data-scientist)
 
 **An Adaptive Multi-Agent Framework for Data Science**
@@ -537,7 +537,7 @@ agentic-data-scientist/
 
 ## Requirements
 
-- Python 3.12+
+- Python 3.12 or 3.13
 - One coding executor CLI: Claude Code, Codex, or OpenCode
 - Keys for enabled routed providers and selected coding executor
 

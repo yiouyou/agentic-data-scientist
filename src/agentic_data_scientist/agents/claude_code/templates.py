@@ -259,7 +259,7 @@ def get_minimal_pyproject() -> str:
     return """[project]
 name = "agentic-data-scientist-session"
 version = "0.1.0"
-requires-python = ">=3.12,<3.13"
+requires-python = ">=3.12,<3.14"
 dependencies = [
     # Core scientific computing
     "numpy>=2.0.0",

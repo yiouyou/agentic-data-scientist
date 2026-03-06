@@ -3,6 +3,7 @@
 .test_workflow_tmp/
 .uv-cache/
 pytest-cache-files-*/
+.agentic_ds_history.sqlite3
 
 findings.md
 progress.md

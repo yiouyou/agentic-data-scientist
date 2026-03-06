@@ -107,16 +107,29 @@ def _build_command(
 
 def _run_command(command: list[str], env: dict[str, str], timeout_sec: int) -> tuple[int, str, str, float]:
     start = time.perf_counter()
-    proc = subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=timeout_sec,
-        check=False,
-    )
-    duration = time.perf_counter() - start
-    return proc.returncode, proc.stdout or "", proc.stderr or "", duration
+    try:
+        proc = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=timeout_sec,
+            check=False,
+        )
+        duration = time.perf_counter() - start
+        return proc.returncode, proc.stdout or "", proc.stderr or "", duration
+    except subprocess.TimeoutExpired as timeout_error:
+        duration = time.perf_counter() - start
+        stdout_text = timeout_error.stdout or ""
+        stderr_text = timeout_error.stderr or ""
+        if isinstance(stdout_text, bytes):
+            stdout_text = stdout_text.decode("utf-8", errors="ignore")
+        if isinstance(stderr_text, bytes):
+            stderr_text = stderr_text.decode("utf-8", errors="ignore")
+        timeout_note = f"[benchmark] timeout after {timeout_sec}s"
+        if timeout_note not in stderr_text:
+            stderr_text = f"{stderr_text}\n{timeout_note}".strip()
+        return 124, stdout_text, stderr_text, duration
 
 
 def _evaluate_checks(
@@ -243,7 +256,7 @@ def main() -> int:
         task_id = str(task.get("id"))
         title = str(task.get("title", task_id))
         repeat = int(task.get("repeat", defaults.get("repeat", 1)) or 1)
-        timeout_sec = int(task.get("timeout_sec", defaults.get("timeout_sec", args.timeout_sec)) or args.timeout_sec)
+        timeout_sec = int(task.get("timeout_sec", args.timeout_sec) or args.timeout_sec)
         repeat = max(1, repeat)
 
         for run_idx in range(1, repeat + 1):
@@ -328,6 +341,8 @@ def main() -> int:
             if exit_code != 0:
                 status = "failed"
                 notes.append(f"nonzero_exit: {exit_code}")
+                if exit_code == 124:
+                    notes.append(f"timeout_sec: {timeout_sec}")
             elif checks_total > 0 and checks_passed < checks_total:
                 status = "failed"
 

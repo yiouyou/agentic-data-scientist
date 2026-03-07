@@ -78,8 +78,7 @@ else:
 DEFAULT_MODEL = LiteLlm(
     model=DEFAULT_MODEL_NAME,
     num_retries=10,
-    timeout=60,
-    # Additional OpenRouter-specific headers
+    timeout=300,
     api_base=OPENROUTER_API_BASE if OPENROUTER_API_KEY else None,
     custom_llm_provider="openrouter" if OPENROUTER_API_KEY else None,
 )
@@ -87,7 +86,7 @@ DEFAULT_MODEL = LiteLlm(
 REVIEW_MODEL = LiteLlm(
     model=REVIEW_MODEL_NAME,
     num_retries=10,
-    timeout=60,
+    timeout=300,
     api_base=OPENROUTER_API_BASE if OPENROUTER_API_KEY else None,
     custom_llm_provider="openrouter" if OPENROUTER_API_KEY else None,
 )
@@ -143,9 +142,7 @@ def _load_routing_config_once() -> Optional[LLMRoutingConfig]:
         logger.info(f"[AgenticDS] Loaded LLM routing config from {config_path}")
         return config
     except Exception as exc:
-        logger.warning(
-            f"[AgenticDS] Failed to load LLM routing config at {config_path}, using env defaults: {exc}"
-        )
+        logger.warning(f"[AgenticDS] Failed to load LLM routing config at {config_path}, using env defaults: {exc}")
         _ROUTING_CONFIG_CACHE = None
         return None
 
@@ -252,10 +249,11 @@ def get_role_model_candidates(
 
 def _build_litellm(model_name: str, profile: Optional[LLMProfile] = None) -> LiteLlm:
     """Build a LiteLlm instance using environment/provider defaults."""
+    timeout = profile.timeout if profile is not None else 300
     kwargs = {
         "model": model_name,
         "num_retries": 10,
-        "timeout": 60,
+        "timeout": timeout,
     }
     if profile is not None:
         kwargs.update(profile_connection_kwargs(profile))
@@ -299,6 +297,7 @@ def get_litellm_candidates_for_role(
         fallback_model = _build_litellm(resolved.fallback_model, profile=resolved.fallback_profile)
 
     return primary_model, fallback_model, resolved
+
 
 # Language requirement (empty for English-only models)
 LANGUAGE_REQUIREMENT = ""

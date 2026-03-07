@@ -4,6 +4,7 @@ Agentic Data Scientist CLI interface.
 Simple command-line interface for running Agentic Data Scientist agents.
 """
 
+import io
 import logging
 import os
 import sys
@@ -193,8 +194,7 @@ def main(
 
         if not config_path.exists():
             click.echo(
-                f"Error: LLM config not found: {config_path}. "
-                "Use --write-llm-template to create one.",
+                f"Error: LLM config not found: {config_path}. Use --write-llm-template to create one.",
                 err=True,
             )
             sys.exit(1)
@@ -244,10 +244,7 @@ def main(
         click.echo(f"- switch_rate: {summary.get('switch_rate', 0.0):.3f}")
         click.echo(f"- avg_observed_reward: {summary.get('avg_observed_reward', 0.0):.3f}")
         click.echo(f"- avg_policy_gain_proxy: {summary.get('avg_policy_gain_proxy', 0.0):.3f}")
-        click.echo(
-            "- avg_observed_reward_when_switched: "
-            f"{summary.get('avg_observed_reward_when_switched', 0.0):.3f}"
-        )
+        click.echo(f"- avg_observed_reward_when_switched: {summary.get('avg_observed_reward_when_switched', 0.0):.3f}")
         note = str(summary.get("note", "") or "")
         if note:
             click.echo(f"- note: {note}")
@@ -263,8 +260,7 @@ def main(
                 reward = float(item.get("observed_reward", 0.0) or 0.0)
                 gain = float(item.get("policy_gain_proxy", 0.0) or 0.0)
                 click.echo(
-                    f"- run={run_id} status={status} "
-                    f"switch={str(switched).lower()} reward={reward:.3f} gain={gain:.3f}"
+                    f"- run={run_id} status={status} switch={str(switched).lower()} reward={reward:.3f} gain={gain:.3f}"
                 )
         return
 
@@ -341,8 +337,8 @@ def main(
         # Create parent directories if needed
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Configure file handler for all logs
-        file_handler = logging.FileHandler(log_path, mode='w')
+        # Configure file handler for all logs (explicit UTF-8 for Windows compat)
+        file_handler = logging.FileHandler(log_path, mode='w', encoding='utf-8')
         file_handler.setLevel(logging.DEBUG if verbose else logging.INFO)
         file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
 
@@ -354,7 +350,11 @@ def main(
         root_logger.addHandler(file_handler)
 
         # Configure console handler for important user-facing messages
-        console_handler = logging.StreamHandler(sys.stdout)
+        # Wrap stdout to replace unencodable chars (e.g. emoji on Windows GBK)
+        safe_stdout = io.TextIOWrapper(
+            sys.stdout.buffer, encoding=sys.stdout.encoding or 'utf-8', errors='replace', line_buffering=True
+        )
+        console_handler = logging.StreamHandler(safe_stdout)
         console_handler.setLevel(logging.INFO)
         console_handler.setFormatter(
             logging.Formatter('%(message)s')  # Simpler format for console

@@ -143,6 +143,7 @@ class LLMProfile:
     api_base: str = ""
     coding_executor: str = ""
     temperature: float = 0.0
+    timeout: int = 300
     enabled: bool = True
     capabilities: List[str] = field(default_factory=list)
 
@@ -205,6 +206,7 @@ def load_llm_routing_config(path: str | Path) -> LLMRoutingConfig:
             temperature=float(item.get("temperature", 0.0)),
             enabled=bool(item.get("enabled", True)),
             capabilities=[str(x).strip() for x in capabilities if str(x).strip()],
+            timeout=int(item.get("timeout", 300)),
         )
 
     routing: Dict[str, RoleRoute] = {}
@@ -294,8 +296,7 @@ def validate_routing_config(config: LLMRoutingConfig) -> Tuple[List[str], List[s
         expected_caps = ROLE_CAPABILITY_HINTS.get(role, set())
         if expected_caps and not expected_caps.intersection(set(primary.capabilities)):
             warnings.append(
-                f"Route '{role}' primary '{route.primary}' capability mismatch "
-                f"(needs one of: {sorted(expected_caps)})"
+                f"Route '{role}' primary '{route.primary}' capability mismatch (needs one of: {sorted(expected_caps)})"
             )
 
     return errors, warnings

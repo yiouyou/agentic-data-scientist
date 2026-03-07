@@ -2,7 +2,10 @@
 .test_core_api_workdir/
 .test_workflow_tmp/
 .uv-cache/
+.ruff_cache
+.history_test*
 pytest-cache-files-*/
+
 .agentic_ds_history.sqlite3
 
 findings.md

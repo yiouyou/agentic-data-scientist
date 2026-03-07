@@ -343,13 +343,16 @@ cat query.txt | agentic-data-scientist --mode orchestrated --files data.csv
 
 CLI 会读取以下环境变量（可在 `.env` 或 shell 中设置）：
 
-**必需：**
-- `OPENROUTER_API_KEY`：规划/评审智能体所需 OpenRouter API key
+**核心必需：**
 - `ANTHROPIC_API_KEY`：编码智能体所需 Anthropic API key
 
+**按路由配置启用时必需：**
+- `OPENAI_API_KEY`、`GOOGLE_API_KEY`、`DASHSCOPE_API_KEY`、`DEEPSEEK_API_KEY`：仅当对应配置在 `configs/llm_routing.yaml` 中启用时需要
+
 **可选：**
-- `DEFAULT_MODEL`：规划/评审模型（默认：`google/gemini-2.5-pro`）
-- `CODING_MODEL`：编码模型（默认：`claude-sonnet-4-5-20250929`）
+- `DEFAULT_MODEL`：规划/评审模型（默认：`gemini-3.1-pro-preview`）
+- `CODING_MODEL`：编码模型（默认：`claude-sonnet-4-6`）
+- `OPENROUTER_API_KEY`：仅用于 OpenRouter 路由调用（可选/旧版兼容）
 
 ## 输出与日志
 

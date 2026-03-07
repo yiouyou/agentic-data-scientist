@@ -310,9 +310,14 @@ def tool_function(
 
 ## 环境变量
 
-**框架必需：**
-- `OPENROUTER_API_KEY`：规划/评审智能体必需
+**核心必需：**
 - `ANTHROPIC_API_KEY`：编码智能体必需
+
+**按路由配置启用时必需：**
+- `OPENAI_API_KEY`、`GOOGLE_API_KEY`、`DASHSCOPE_API_KEY`、`DEEPSEEK_API_KEY`：仅当对应配置在 `configs/llm_routing.yaml` 中启用时需要
+
+**可选/旧版兼容：**
+- `OPENROUTER_API_KEY`：仅用于 OpenRouter 路由调用
 
 **工具可选：**
 - `CONTEXT7_API_KEY`：仅在启用 Context7 MCP 时需要
@@ -379,5 +384,6 @@ def tool_function(
 - Skills 无需配置
 
 **环境变量：**
-- 必需：`OPENROUTER_API_KEY`、`ANTHROPIC_API_KEY`
-- 可选：`CONTEXT7_API_KEY`（仅使用 Context7 时）
+- 核心必需：`ANTHROPIC_API_KEY`
+- 按路由配置启用时必需：`OPENAI_API_KEY`、`GOOGLE_API_KEY`、`DASHSCOPE_API_KEY`、`DEEPSEEK_API_KEY`
+- 可选：`OPENROUTER_API_KEY`（旧版兼容）、`CONTEXT7_API_KEY`（仅使用 Context7 时）

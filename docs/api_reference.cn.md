@@ -27,10 +27,10 @@ ds = DataScientist(
 
 **说明**：多智能体 ADK 工作流（`agent_type="adk"`）是主要模式，适用于大多数场景。直接模式仅建议用于不需要规划与验证的简单任务。
 
-**模型配置**：模型通过环境变量配置，并经 OpenRouter 路由：
-- ADK 智能体：`DEFAULT_MODEL`（默认：`google/gemini-2.5-pro`）
-- 编码智能体：`CODING_MODEL`（默认：`claude-sonnet-4-5-20250929`）
-- 带提供商前缀的模型（例如 `google/`、`anthropic/`）会自动路由到 OpenRouter
+**模型配置**：模型通过环境变量配置，支持多提供商路由（参见 `configs/llm_routing.yaml`）：
+- ADK 智能体：`DEFAULT_MODEL`（默认：`gemini-3.1-pro-preview`）
+- 编码智能体：`CODING_MODEL`（默认：`claude-sonnet-4-6`）
+- 路由配置支持按角色指定主/备模型和提供商
 
 #### 属性
 
@@ -417,19 +417,21 @@ async def process_workflow_events(ds, query):
 
 ## 环境变量
 
-### 必需
+### 核心必需
 
 - **ANTHROPIC_API_KEY**：Claude（编码智能体）所需 Anthropic API key
-- **OPENROUTER_API_KEY**：规划/评审智能体所需 OpenRouter API key
+
+### 按路由配置启用时必需
+
+- **OPENAI_API_KEY**、**GOOGLE_API_KEY**、**DASHSCOPE_API_KEY**、**DEEPSEEK_API_KEY**：仅当对应配置文件在 `configs/llm_routing.yaml` 中启用时需要
 
 ### 可选
 
-- **DEFAULT_MODEL**：规划与评审模型（默认：`google/gemini-2.5-pro`，经 OpenRouter 路由）
+- **DEFAULT_MODEL**：规划与评审模型（默认：`gemini-3.1-pro-preview`）
 - **REVIEW_MODEL**：评审模型（默认：与 DEFAULT_MODEL 相同）
-- **CODING_MODEL**：编码模型（默认：`claude-sonnet-4-5-20250929`）
+- **CODING_MODEL**：编码模型（默认：`claude-sonnet-4-6`）
+- **OPENROUTER_API_KEY**：仅用于 OpenRouter 路由调用（可选/旧版兼容）
 - **OPENROUTER_API_BASE**：OpenRouter API 地址（默认：`https://openrouter.ai/api/v1`）
-- **OR_SITE_URL**：OpenRouter 站点 URL（默认：`k-dense.ai`）
-- **OR_APP_NAME**：OpenRouter 应用名（默认：`Agentic Data Scientist`）
 
 ## 错误处理
 

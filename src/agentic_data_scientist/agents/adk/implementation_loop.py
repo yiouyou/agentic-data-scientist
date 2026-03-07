@@ -62,11 +62,11 @@ def trim_history_to_recent_events(callback_context: CallbackContext, max_events:
         events_to_remove = len(events) - max_events
         logger.info(f"[DEBUG] Trimming {events_to_remove} old events, keeping {max_events} most recent")
 
-        # Remove oldest events
-        for _ in range(events_to_remove):
-            events.pop(0)
+        # Direct assignment (O(n)) instead of repeated pop(0) (O(n²))
+        # Consistent with event_compression.py approach
+        session.events = events[-max_events:]
 
-        logger.info(f"[DEBUG] After trimming: {len(events)} events remain")
+        logger.info(f"[DEBUG] After trimming: {len(session.events)} events remain")
 
 
 def make_implementation_agents(working_dir: str, tools: list):
@@ -110,19 +110,11 @@ def make_implementation_agents(working_dir: str, tools: list):
     skill_execution_agent = create_coding_agent(
         executor=coding_backend_route.primary_executor,
         name="skill_execution_agent",
-        description=(
-            f"A coding agent that uses {coding_backend_route.primary_executor} to implement plans."
-        ),
+        description=(f"A coding agent that uses {coding_backend_route.primary_executor} to implement plans."),
         working_dir=working_dir,
         model=coding_model_selection.primary_model,
-        fallback_model=(
-            coding_model_selection.fallback_model
-            if coding_backend_route.fallback_enabled
-            else None
-        ),
-        fallback_max_retries=(
-            coding_model_selection.max_retry if coding_backend_route.fallback_enabled else 0
-        ),
+        fallback_model=(coding_model_selection.fallback_model if coding_backend_route.fallback_enabled else None),
+        fallback_max_retries=(coding_model_selection.max_retry if coding_backend_route.fallback_enabled else 0),
         routing_role="execution_agent",
         primary_profile_name=(
             coding_model_selection.selected_profile.name

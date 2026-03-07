@@ -161,7 +161,7 @@ Every plan must include:
 financial_prompt = load_prompt("plan_maker", domain="finance")
 ```
 
-**说明**：模型通过环境变量（`OPENROUTER_API_KEY`、`DEFAULT_MODEL`）配置，并经 OpenRouter 路由。
+**说明**：模型通过环境变量（`DEFAULT_MODEL`、`CODING_MODEL`）和 `configs/llm_routing.yaml` 配置，支持多提供商路由。
 
 ### 提示词变量
 
@@ -735,16 +735,17 @@ await pds.close()
 
 扩展系统时，请留意以下环境变量：
 
-**必需：**
-- `OPENROUTER_API_KEY`：ADK 智能体（DEFAULT_MODEL）
+**核心必需：**
 - `ANTHROPIC_API_KEY`：Claude Code 编码智能体
 
-**可选：**
-- `DEFAULT_MODEL`：规划/评审模型（默认：`google/gemini-2.5-pro`）
-- `REVIEW_MODEL`：评审模型（默认：与 DEFAULT_MODEL 相同）
-- `CODING_MODEL`：编码模型（默认：`claude-sonnet-4-5-20250929`）
+**按路由配置启用时必需：**
+- `OPENAI_API_KEY`、`GOOGLE_API_KEY`、`DASHSCOPE_API_KEY`、`DEEPSEEK_API_KEY`：仅当对应配置在 `configs/llm_routing.yaml` 中启用时需要
 
-带提供商前缀的模型（例如 `google/`、`anthropic/`）会通过 LiteLLM 自动路由到 OpenRouter。
+**可选：**
+- `DEFAULT_MODEL`：规划/评审模型（默认：`gemini-3.1-pro-preview`）
+- `REVIEW_MODEL`：评审模型（默认：与 DEFAULT_MODEL 相同）
+- `CODING_MODEL`：编码模型（默认：`claude-sonnet-4-6`）
+- `OPENROUTER_API_KEY`：仅用于 OpenRouter 路由调用（可选/旧版兼容）
 
 ## 最佳实践
 

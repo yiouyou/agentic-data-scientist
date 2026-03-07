@@ -37,8 +37,8 @@ Issues = "https://github.com/K-Dense-AI/agentic-data-scientist/issues"
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.4.1",
-    "pytest-asyncio>=1.1.0",
+    "pytest>=8.4.2",
+    "pytest-asyncio>=1.2.0",
     "ruff>=0.13.1",
 ]
 
@@ -80,5 +80,6 @@ norecursedirs = ["pytest-cache-files-*", ".tmp/pytest-of-*"]
 dev = [
     "pytest>=8.4.2",
     "pytest-asyncio>=1.2.0",
+    "ruff>=0.13.1",
 ]
 

@@ -5,8 +5,13 @@
 .uv-cache/
 .ruff_cache/
 pytest-cache-files-*/
+benchmarks/
+agentic_output/
 
 .agentic_ds_history.sqlite3
+.agentic_ds_innovation_memory.sqlite3
+
+p3_*.txt
 
 findings.md
 progress.md

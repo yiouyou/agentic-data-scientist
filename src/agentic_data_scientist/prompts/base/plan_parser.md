@@ -17,6 +17,11 @@ Parse the plan into exactly two components:
    - Stages should be independent enough to be implemented one at a time
    - Extract the stage title and detailed description
    - Include 3-7 stages typically (vary based on complexity)
+   - For each stage, also populate:
+     - `stage_id`: a short stable identifier (e.g. "s1", "s2")
+     - `depends_on`: list of `stage_id` values this stage requires completed first (empty list `[]` for the first stage)
+     - `inputs_required`: data files or artifacts this stage needs as input
+     - `outputs_produced`: files or artifacts this stage will generate
 
 2. **High Level Success Criteria**: Definitive checklist for completion
    - These are end-state requirements, not progressive milestones
@@ -38,19 +43,35 @@ For a request "Analyze customer churn and build a predictive model":
   "stages": [
     {
       "title": "Data Loading and Exploration",
-      "description": "Load customer data, check data quality, and perform exploratory data analysis to understand churn patterns"
+      "description": "Load customer data, check data quality, and perform exploratory data analysis to understand churn patterns",
+      "stage_id": "s1",
+      "depends_on": [],
+      "inputs_required": ["customer_data.csv"],
+      "outputs_produced": ["eda_report.html", "cleaned_data.csv"]
     },
     {
       "title": "Feature Engineering",
-      "description": "Create relevant features based on customer behavior, demographics, and transaction history"
+      "description": "Create relevant features based on customer behavior, demographics, and transaction history",
+      "stage_id": "s2",
+      "depends_on": ["s1"],
+      "inputs_required": ["cleaned_data.csv"],
+      "outputs_produced": ["feature_matrix.csv"]
     },
     {
       "title": "Model Development",
-      "description": "Train and evaluate multiple classification models to predict customer churn"
+      "description": "Train and evaluate multiple classification models to predict customer churn",
+      "stage_id": "s3",
+      "depends_on": ["s2"],
+      "inputs_required": ["feature_matrix.csv"],
+      "outputs_produced": ["model.pkl", "evaluation_metrics.json"]
     },
     {
       "title": "Model Interpretation",
-      "description": "Analyze feature importance and generate insights about churn drivers"
+      "description": "Analyze feature importance and generate insights about churn drivers",
+      "stage_id": "s4",
+      "depends_on": ["s3"],
+      "inputs_required": ["model.pkl", "feature_matrix.csv"],
+      "outputs_produced": ["feature_importance.png", "final_report.html"]
     }
   ],
   "success_criteria": [
@@ -86,4 +107,6 @@ For a request "Analyze customer churn and build a predictive model":
 - Extract stages and criteria directly from the plan
 - Preserve the intent and content from the original plan
 - If the plan uses different terminology, normalize it to "stages" and "success_criteria"
+- Every stage MUST include `stage_id`, `depends_on`, `inputs_required`, and `outputs_produced`
+- Use concrete file names in `inputs_required` and `outputs_produced` when the plan mentions them; infer reasonable names when not explicitly stated
 

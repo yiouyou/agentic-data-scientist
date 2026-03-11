@@ -48,6 +48,18 @@ except (ImportError, AttributeError):
 logger = logging.getLogger(__name__)
 
 
+def _safe_echo(message: str = "", err: bool = False) -> None:
+    """click.echo wrapper that survives Windows GBK consoles.
+
+    Replaces characters that cannot be encoded by the current stdout encoding
+    (e.g. ✓ ✗ → on a GBK terminal) so the whole line isn't lost.
+    """
+    encoding = sys.stderr.encoding if err else sys.stdout.encoding
+    if encoding and encoding.lower().replace("-", "") not in ("utf8", "utf8sig"):
+        message = message.encode(encoding, errors="replace").decode(encoding)
+    click.echo(message, err=err)
+
+
 @click.command()
 @click.argument('query', required=False)
 @click.option(
@@ -113,6 +125,13 @@ logger = logging.getLogger(__name__)
     show_default=True,
     help='Recent planner-selection records to include in replay report',
 )
+@click.option(
+    '--innovation-mode',
+    type=click.Choice(['auto', 'routine', 'hybrid', 'innovation']),
+    default='auto',
+    show_default=True,
+    help='Innovation mode: auto (task router decides), routine (standard), hybrid (limited discovery), innovation (full discovery)',
+)
 def main(
     query: Optional[str],
     files: tuple,
@@ -127,6 +146,7 @@ def main(
     write_llm_template: bool,
     history_replay: bool,
     history_replay_limit: int,
+    innovation_mode: str,
 ):
     """
     Run Agentic Data Scientist with a query.
@@ -190,10 +210,10 @@ def main(
         config_path = Path(llm_config)
         if write_llm_template and not config_path.exists():
             created_path = write_llm_config_template(config_path)
-            click.echo(f"Created template config: {created_path}")
+            _safe_echo(f"Created template config: {created_path}")
 
         if not config_path.exists():
-            click.echo(
+            _safe_echo(
                 f"Error: LLM config not found: {config_path}. Use --write-llm-template to create one.",
                 err=True,
             )
@@ -203,23 +223,23 @@ def main(
             routing_config = load_llm_routing_config(config_path)
             errors, warnings = validate_routing_config(routing_config)
         except Exception as e:
-            click.echo(f"Error loading LLM config: {e}", err=True)
+            _safe_echo(f"Error loading LLM config: {e}", err=True)
             sys.exit(1)
 
         if errors:
-            click.echo("LLM config validation failed:", err=True)
+            _safe_echo("LLM config validation failed:", err=True)
             for error in errors:
-                click.echo(f"- {error}", err=True)
+                _safe_echo(f"- {error}", err=True)
             sys.exit(1)
 
         if warnings:
-            click.echo("LLM config warnings:")
+            _safe_echo("LLM config warnings:")
             for warning in warnings:
-                click.echo(f"- {warning}")
-            click.echo("")
+                _safe_echo(f"- {warning}")
+            _safe_echo("")
 
         report = run_llm_preflight(routing_config)
-        click.echo(format_preflight_report(report))
+        _safe_echo(format_preflight_report(report))
         if report["overall_status"] == "unavailable":
             sys.exit(1)
         return
@@ -227,7 +247,7 @@ def main(
     if history_replay:
         store = create_history_store_from_env()
         if store is None:
-            click.echo(
+            _safe_echo(
                 "History replay unavailable: ADS_HISTORY_ENABLED is disabled in environment.",
                 err=True,
             )
@@ -235,45 +255,49 @@ def main(
         try:
             report = store.run_counterfactual_replay(recent_limit=max(1, history_replay_limit))
         except Exception as e:
-            click.echo(f"History replay failed: {e}", err=True)
+            _safe_echo(f"History replay failed: {e}", err=True)
             sys.exit(1)
 
         summary = report.get("summary", {})
-        click.echo("Planner Selection Replay (offline proxy):")
-        click.echo(f"- records: {summary.get('records', 0)}")
-        click.echo(f"- switch_rate: {summary.get('switch_rate', 0.0):.3f}")
-        click.echo(f"- avg_observed_reward: {summary.get('avg_observed_reward', 0.0):.3f}")
-        click.echo(f"- avg_policy_gain_proxy: {summary.get('avg_policy_gain_proxy', 0.0):.3f}")
-        click.echo(f"- avg_observed_reward_when_switched: {summary.get('avg_observed_reward_when_switched', 0.0):.3f}")
+        _safe_echo("Planner Selection Replay (offline proxy):")
+        _safe_echo(f"- records: {summary.get('records', 0)}")
+        _safe_echo(f"- switch_rate: {summary.get('switch_rate', 0.0):.3f}")
+        _safe_echo(f"- avg_observed_reward: {summary.get('avg_observed_reward', 0.0):.3f}")
+        _safe_echo(f"- avg_policy_gain_proxy: {summary.get('avg_policy_gain_proxy', 0.0):.3f}")
+        _safe_echo(f"- avg_observed_reward_when_switched: {summary.get('avg_observed_reward_when_switched', 0.0):.3f}")
         note = str(summary.get("note", "") or "")
         if note:
-            click.echo(f"- note: {note}")
+            _safe_echo(f"- note: {note}")
 
         records = report.get("records", [])
         if isinstance(records, list) and records:
-            click.echo("")
-            click.echo("Recent sample records:")
+            _safe_echo("")
+            _safe_echo("Recent sample records:")
             for item in records[:5]:
                 run_id = item.get("run_id", "")
                 status = item.get("status", "")
                 switched = bool(item.get("switch_applied", False))
                 reward = float(item.get("observed_reward", 0.0) or 0.0)
                 gain = float(item.get("policy_gain_proxy", 0.0) or 0.0)
-                click.echo(
+                _safe_echo(
                     f"- run={run_id} status={status} switch={str(switched).lower()} reward={reward:.3f} gain={gain:.3f}"
                 )
         return
 
     if not mode:
-        click.echo("Error: --mode is required unless --llm-preflight or --history-replay is used.", err=True)
+        _safe_echo("Error: --mode is required unless --llm-preflight or --history-replay is used.", err=True)
         sys.exit(1)
+
+    os.environ["ADS_INNOVATION_MODE"] = innovation_mode or "auto"
+    if innovation_mode and innovation_mode != "auto":
+        os.environ["ADS_INNOVATION_MODE_OVERRIDE"] = innovation_mode
 
     # Get query from stdin if not provided
     if not query:
         if not sys.stdin.isatty():
             query = sys.stdin.read().strip()
         else:
-            click.echo("Error: No query provided. Use 'agentic-data-scientist \"your query\"' or pipe input.", err=True)
+            _safe_echo("Error: No query provided. Use 'agentic-data-scientist \"your query\"' or pipe input.", err=True)
             sys.exit(1)
 
     # Prepare file list
@@ -281,7 +305,7 @@ def main(
     for f in files:
         path = Path(f)
         if not path.exists():
-            click.echo(f"Warning: File not found: {f}", err=True)
+            _safe_echo(f"Warning: File not found: {f}", err=True)
             continue
 
         # Handle directory - recursively add all files
@@ -295,9 +319,9 @@ def main(
                     files_found += 1
 
             if files_found > 0:
-                click.echo(f"Found {files_found} file(s) in directory: {path}")
+                _safe_echo(f"Found {files_found} file(s) in directory: {path}")
             else:
-                click.echo(f"Warning: No files found in directory: {path}", err=True)
+                _safe_echo(f"Warning: No files found in directory: {path}", err=True)
         else:
             # Handle single file
             file_list.append((path.name, path))
@@ -385,48 +409,48 @@ def main(
 
         # Display working directory information
         if temp_dir:
-            click.echo(f"Working directory (temporary): {core.working_dir}")
-            click.echo("Files will be cleaned up after completion")
+            _safe_echo(f"Working directory (temporary): {core.working_dir}")
+            _safe_echo("Files will be cleaned up after completion")
         else:
-            click.echo(f"Working directory: {core.working_dir}")
+            _safe_echo(f"Working directory: {core.working_dir}")
             if core.auto_cleanup:
-                click.echo("Files will be cleaned up after completion")
+                _safe_echo("Files will be cleaned up after completion")
             else:
-                click.echo("Files will be preserved after completion")
+                _safe_echo("Files will be preserved after completion")
 
-        click.echo(f"Logs: {log_path}")
-        click.echo("")
+        _safe_echo(f"Logs: {log_path}")
+        _safe_echo("")
 
     except Exception as e:
-        click.echo(f"Error initializing Agentic Data Scientist: {e}", err=True)
+        _safe_echo(f"Error initializing Agentic Data Scientist: {e}", err=True)
         sys.exit(1)
 
     # Run query
     try:
         result = core.run(query, files=file_list)
         if result.status == "completed":
-            click.echo("\n" + "=" * 60)
-            click.echo("RESPONSE:")
-            click.echo("=" * 60)
-            click.echo(result.response)
-            click.echo("\n" + "=" * 60)
+            _safe_echo("\n" + "=" * 60)
+            _safe_echo("RESPONSE:")
+            _safe_echo("=" * 60)
+            _safe_echo(result.response or "")
+            _safe_echo("\n" + "=" * 60)
             if result.files_created:
-                click.echo(f"\nFiles created ({len(result.files_created)}):")
+                _safe_echo(f"\nFiles created ({len(result.files_created)}):")
                 for file in result.files_created:
-                    click.echo(f"  - {file}")
-            click.echo(f"\nDuration: {result.duration:.2f}s")
-            click.echo(f"Session ID: {result.session_id}")
-            click.echo(f"Working directory: {core.working_dir}")
+                    _safe_echo(f"  - {file}")
+            _safe_echo(f"\nDuration: {result.duration:.2f}s")
+            _safe_echo(f"Session ID: {result.session_id}")
+            _safe_echo(f"Working directory: {core.working_dir}")
             if not core.auto_cleanup:
-                click.echo(f"\nFiles preserved at: {core.working_dir}")
+                _safe_echo(f"\nFiles preserved at: {core.working_dir}")
         else:
-            click.echo(f"\nError: {result.error}", err=True)
+            _safe_echo(f"\nError: {result.error}", err=True)
             sys.exit(1)
     except KeyboardInterrupt:
-        click.echo("\n\nInterrupted by user", err=True)
+        _safe_echo("\n\nInterrupted by user", err=True)
         sys.exit(130)
     except Exception as e:
-        click.echo(f"\nError: {e}", err=True)
+        _safe_echo(f"\nError: {e}", err=True)
         logger.exception("Unexpected error")
         sys.exit(1)
     finally:

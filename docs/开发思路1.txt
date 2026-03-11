@@ -1,0 +1,1235 @@
+# 创新操作系统（Innovation OS）V1 开发文档
+
+## 1. 文档目的
+
+本文档将现有的通用科学研究规划 agent，从“以计划为中心（plan-centric）”的执行系统，演进为“计划治理 + 发现驱动（plan-governed discovery）”的创新操作系统。
+
+目标不是替换现有规划/执行流水线，而是在其之上增加一层**方法发现、方法比较、创新触发、方法级回退**能力，使系统不仅能把研究任务做完，还能系统地产生并筛选新思路。
+
+---
+
+## 2. 总体判断：是否可行
+
+**结论：可行，而且可分阶段落地。**
+
+原因：
+
+1. 你当前系统已经具备创新操作系统最关键的三个基础：
+
+   * 规划主干（plan_maker / reviewer / parser / orchestrator）
+   * 阶段状态管理（stage records / criteria records）
+   * 反思与重试机制（stage_reflector / implementation_loop）
+
+2. 当前缺的不是执行能力，而是以下四个能力层：
+
+   * 方法发现层（不是只发现 plan，而是发现 method）
+   * 创新触发层（何时必须发散）
+   * 方法级验证层（不仅验证结果，还验证方法是否真正不同、是否值得）
+   * 方法级回退层（失败时换方法，而不是只重试）
+
+3. 这些缺口都可以通过**增量式改造**实现，无需一次性推翻架构。
+
+因此推荐路线不是“重写系统”，而是：
+
+* 保留原有 plan-centric 主干
+* 插入 discovery-centric 子系统
+* 让两者通过明确 schema 和触发规则耦合
+
+---
+
+## 2.1 新增：任务路由原则
+
+在进入 Innovation OS 主流程前，必须先进行任务路由，避免对常规执行任务过度启用创新层。
+
+### task_router
+
+```text
+User Query
+  → task_router
+      → routine_mode
+      → hybrid_mode
+      → innovation_mode
+```
+
+### 路由规则
+
+#### routine_mode
+
+适用于：
+
+* 复现已有流程
+* 常规数据清洗/转换
+* 汇总、整理、格式化、报告撰写
+* 用户目标是完成，而非探索
+
+策略：
+
+* 不生成 method cards
+* 直接进入 plan-centric 流程
+* 仅保留 programmatic verification
+
+#### hybrid_mode
+
+适用于：
+
+* 一般研究分析任务
+* 有一定不确定性，但不强求新机制或新方法
+* 用户希望比较替代方案，但预算有限
+
+策略：
+
+* 生成 2 个 method cards
+* 仅保留 1 个备用方法
+* discovery 只在异常/停滞时触发
+
+#### innovation_mode
+
+适用于：
+
+* 用户显式要求新思路/创新方案
+* 问题存在明显矛盾、异常或未知机制
+* 目标包括 hypothesis generation / mechanism discovery / novel design
+
+策略：
+
+* 生成 3–4 个 method cards
+* 开启 method-level selection 与 backtracking
+* 启用 discovery triggers
+
+---
+
+## 3. V1 目标边界
+
+### 3.1 V1 要解决的问题
+
+V1 只解决以下问题：
+
+1. 系统能够在规划前或规划初期，生成多个**方法候选**，而不是只生成一个计划候选。
+2. 系统能够识别“什么时候应该进入创新探索”，而不是一直线性规划。
+3. 系统能够用结构化对象表示创新思路，以便比较、筛选、回退、复用。
+4. 系统能够在阶段失败或出现异常时，进行**方法级切换**。
+5. 系统能够将 TRIZ、Abduction、Morphological Analysis 等作为独立创新算子接入。
+
+### 3.2 V1 暂不解决的问题
+
+V1 不做：
+
+1. 全局并行树搜索
+2. 大规模 MCTS / PUCT
+3. 多分支并发执行
+4. 自动长期学习闭环
+5. 复杂历史知识蒸馏
+
+V1 的目标是做出一个**受控、可解释、可迭代的创新层**，而不是直接做完整科学发现引擎。
+
+---
+
+## 4. 新的系统定位
+
+## 4.1 从 Plan System 升级为 Innovation OS
+
+原系统：
+
+```text
+User Query
+  → plan_maker
+  → plan_reviewer
+  → plan_candidate_selector
+  → plan_parser
+  → stage_orchestrator
+  → summary_agent
+```
+
+V1 目标系统：
+
+```text
+User Query
+  → problem_framer
+  → innovation_trigger_detector
+  → method_discovery_layer
+      → baseline_method_generator
+      → TRIZ_operator
+      → abduction_operator
+      → morphology_operator
+  → method_candidate_selector
+  → plan_instantiator
+  → plan_reviewer
+  → plan_parser
+  → stage_orchestrator
+      per stage:
+        → implementation_loop
+        → programmatic_verifier
+        → method_critic (optional)
+        → criteria_checker
+        → stage_reflector / stage_decomposer / method_backtracker
+  → deep_verifier
+  → summary_agent
+```
+
+核心变化：
+
+* **plan 不再是搜索起点，而是 method selection 的展开结果。**
+* 研究过程中的创新，不再依赖 prompt 偶然性，而由显式 discovery layer 承担。
+
+---
+
+## 4.1 新增：统一预算控制原则
+
+为避免 discovery layer 在 hybrid/innovation 模式下失控，系统必须引入统一预算控制器 `budget_controller`。
+
+### budget_controller
+
+负责为一次任务分配和约束以下预算：
+
+```json
+{
+  "method_generation_budget": 3,
+  "exploration_budget": 2,
+  "verification_budget": 3,
+  "backtrack_budget": 1,
+  "decomposition_budget": 1
+}
+```
+
+### 预算含义
+
+* method_generation_budget：允许生成多少个 method cards
+* exploration_budget：允许多少个探索型 stage 或探索轮次
+* verification_budget：允许多少轮深度验证/全局核查
+* backtrack_budget：允许多少次方法级回退
+* decomposition_budget：允许多少次阶段分解
+
+### 模式默认值
+
+#### routine_mode
+
+* method_generation_budget = 0
+* exploration_budget = 0
+* verification_budget = 1
+* backtrack_budget = 0
+* decomposition_budget = 0
+
+#### hybrid_mode
+
+* method_generation_budget = 2
+* exploration_budget = 1
+* verification_budget = 2
+* backtrack_budget = 1
+* decomposition_budget = 1
+
+#### innovation_mode
+
+* method_generation_budget = 3–4
+* exploration_budget = 2
+* verification_budget = 3
+* backtrack_budget = 1–2
+* decomposition_budget = 1–2
+
+### 原则
+
+* 所有 trigger、backtrack、decompose 都必须消耗预算
+* 预算耗尽后只能继续收敛，不能继续发散
+* selector、backtracker、stage_decomposer 都必须读取 budget_controller
+
+---
+
+## 5. 核心设计原则
+
+1. **计划治理，发现创新**
+
+   * 计划层负责边界、预算、依赖、交付
+   * 发现层负责方法生成、发散、替代、回退
+
+2. **方法对象化**
+
+   * 所有创新方向都必须表示为 method card
+   * 没有 method card 的“灵感”不进入主流程
+
+3. **结构化发散，受控收敛**
+
+   * 发散不是自由 brainstorming
+   * 所有发散都要绑定 method family、cheap test、failure mode
+
+4. **创新触发是显式规则，不靠模型自觉**
+
+   * 只有检测到矛盾、异常、停滞、候选同质化时才强制进入 discovery mode
+
+5. **先方法，后计划**
+
+   * method → plan，而不是 plan 中暗含 method
+
+6. **方法失败是信息，不是纯错误**
+
+   * 每次失败应记录失败模式和排除条件，供下一次 negative prompting 使用
+
+---
+
+## 6. V1 核心模块
+
+## 6.1 problem_framer
+
+### 职责
+
+将用户任务转化为结构化问题表述，为创新探索提供统一输入。
+
+### 输入
+
+* user query
+* optional context
+* available skills/tools
+
+### 抑制条件（suppress rules）
+
+满足任一条件时，不应进入 discovery mode：
+
+* 用户目标明确是执行、复现、整理，而不是探索
+* 当前阶段仅为数据清洗、格式转换、文件整理
+* 基础 artifact 尚未完成，创新会过早放大不确定性
+* 失败信号明显属于实现问题（如脚本报错、文件缺失、schema 错误）
+* 当前方法尚未完成最小可行验证，不足以判断其平庸或失败
+
+### 输出
+
+```json
+{
+  "research_goal": "...",
+  "task_type": "analysis|discovery|explanation|design|optimization",
+  "knowns": ["..."],
+  "unknowns": ["..."],
+  "constraints": ["..."],
+  "deliverables": ["..."],
+  "success_axes": ["accuracy", "novelty", "robustness"],
+  "suspected_contradictions": ["..."],
+  "uncertainties": ["..."],
+  "recommended_mode": "plan_first|discover_first|hybrid"
+}
+```
+
+### 实现建议
+
+* 先用 LLM 产出
+* 再做轻量 schema 校验
+* 暂不引入复杂程序逻辑
+
+---
+
+## 6.2 innovation_trigger_detector
+
+### 职责
+
+判断当前任务或阶段是否应进入创新探索模式。
+
+### 触发条件
+
+#### 初始触发
+
+满足任一条件即可：
+
+* task_type 为 discovery / design / explanation
+* 用户显式要求“新思路 / 替代方法 / 创新方案”
+* problem_framer 发现明显矛盾
+* 成功轴包含 novelty / mechanism / hypothesis generation
+
+#### 运行期触发
+
+满足任一条件即可：
+
+* review 提示方案平庸或同质化
+* 同类方法已尝试过但失败
+* 指标冲突（A 提升，B 显著下降）
+* 出现异常或反常结果
+* 某阶段 attempt > 1
+* 方法候选之间相似度高于阈值
+
+### 输出
+
+```json
+{
+  "enter_discovery_mode": true,
+  "trigger_reasons": ["metric_conflict", "novelty_required"],
+  "suggested_operator_families": ["TRIZ", "abduction"]
+}
+```
+
+---
+
+## 6.3 method_discovery_layer
+
+### 职责
+
+生成多个真正不同的**方法候选**，而非计划文本变体。
+
+### 输出对象：Method Card
+
+```json
+{
+  "method_id": "m1",
+  "method_family": "TRIZ|abduction|morphology|baseline|inverse_assumption|analogy_transfer",
+  "title": "...",
+  "core_hypothesis": "...",
+  "assumptions": ["..."],
+  "preconditions": ["..."],
+  "invalid_if": ["..."],
+  "problem_reframe": "...",
+  "why_it_may_work": "...",
+  "what_it_sacrifices": "...",
+  "cheap_test": "...",
+  "required_capabilities": ["literature_search", "simulation", "stats"],
+  "expected_artifacts": ["hypothesis_table", "pilot_result.json"],
+  "failure_modes": ["..."],
+  "novelty_rationale": "...",
+  "orthogonality_tags": ["mechanistic", "constraint_based"],
+  "status": "proposed|selected|rejected|failed|succeeded"
+}
+```
+
+### method card 增强字段
+
+除基础字段外，V1.1 新增如下验证相关字段：
+
+```json
+{
+  "falsification_test": "用于尽快证明该方法不成立的低成本测试",
+  "discriminating_evidence": "什么证据最能区分本方法与其他方法",
+  "kill_conditions": ["满足这些条件则应立即放弃该方法"]
+}
+```
+
+设计原则：
+
+* 每个方法不仅要说明为什么可能成功
+* 还必须说明如何尽快失败
+* 无法定义 falsification_test 的方法，默认降低选择优先级
+
+### V1 最小算子集
+
+#### 1. baseline_method_generator
+
+生成常规方法，作为基线。
+
+#### 2. TRIZ_operator
+
+用于矛盾驱动创新。
+输入：suspected_contradictions
+输出：TRIZ method cards
+
+#### 3. abduction_operator
+
+用于异常解释、竞争性假设生成。
+输入：observations / anomalies / unknowns
+输出：解释性 method cards
+
+#### 4. morphology_operator
+
+用于多维设计空间枚举。
+输入：problem dimensions
+输出：组合式 method cards
+
+### V1 生成策略
+
+* 默认生成 3 个 method cards：
+
+  * 1 个 baseline
+  * 1 个 contradiction-driven（TRIZ）
+  * 1 个 explanation/combinatorial（abduction 或 morphology）
+
+如果任务简单，则只保留 baseline + 1 个创新候选。
+
+---
+
+## 6.4 method_candidate_selector
+
+### 职责
+
+对方法候选而不是 plan 候选进行排序。
+
+### 评分维度
+
+```text
+score(method) =
+    feasibility_score
+  + novelty_score
+  + orthogonality_score
+  + cheap_testability_score
+  + verification_readiness_score
+  + historical_success_score
+  - cost_penalty
+  - similarity_penalty
+  - unsupported_capability_penalty
+```
+
+### 新增评分项
+
+* information_gain_score：即使失败，是否能显著缩小假设空间
+* failure_value_score：失败后能否为后续方法提供高价值负面约束
+
+### 推荐维度解释
+
+* feasibility_score：是否能在当前工具/数据/预算下执行
+* novelty_score：是否引入了不同核心假设
+* information_gain_score：是否能通过一次尝试获得高信息增益
+* failure_value_score：即使失败，是否能产生高价值排除信息
+* orthogonality_score：与其他方法是否足够不同
+* cheap_testability_score：是否可以低成本快速试
+* verification_readiness_score：是否容易验证
+* historical_success_score：历史上类似场景是否有用
+* similarity_penalty：与基线/其他方法过于相似则扣分
+
+### baseline 的角色定义
+
+baseline method 不是普通候选之一，而是系统中的固定参照与保底路径。
+
+### baseline 必须满足
+
+* 始终存在，不能被省略
+* 是当前任务下最低风险、最高可交付性的方案
+* 可作为评分参考系与回退下限
+* 在所有创新方法失败时，仍可提供可接受结果
+
+### baseline 的作用
+
+* 对照组：用于衡量创新方法是否真的更好
+* 保底交付路径：保证系统不会因过度探索而无结果
+* 参考系：用于 novelty、orthogonality、structure difference 等指标计算
+
+### V1 输出策略
+
+* 保留 top-1 作为主方法
+* 保留 top-2 作为备用方法
+* 只将主方法展开为完整 plan
+* 备用方法保留为 backtrack 候选
+
+---
+
+## 6.5 plan_instantiator
+
+### 职责
+
+将 method card 展开为可执行研究计划。
+
+### 输入
+
+* selected method card
+* framed problem
+
+### 输出
+
+沿用你现有 plan schema，但增加方法字段：
+
+```json
+{
+  "plan_id": "p1",
+  "source_method_id": "m2",
+  "method_family": "TRIZ",
+  "stages": [...],
+  "success_criteria": [...],
+  "backtrack_candidates": ["m1", "m3"]
+}
+```
+
+### 注意
+
+plan_instantiator 不负责创造方法，只负责把方法变成阶段结构。
+
+---
+
+## 6.6 programmatic_verifier
+
+### 职责
+
+在 criteria_checker 前提供事实性验证信号。
+
+### 分层
+
+#### Tier 1: Hard checks
+
+* 文件存在
+* schema 可解析
+* 脚本运行成功
+* 输出非空
+* 关键 artifact 生成成功
+
+#### Tier 2: Soft signals
+
+* 数值阈值
+* 图表完整性
+* 结果一致性
+* 关键字段覆盖率
+
+### 输出
+
+```json
+{
+  "hard_checks": {
+    "script_ok": true,
+    "result_json_exists": true,
+    "schema_valid": true
+  },
+  "soft_signals": {
+    "auc": 0.88,
+    "p_value": 0.03,
+    "plot_count": 3
+  },
+  "block_llm_review": false,
+  "verdict": "pass|warn|fail"
+}
+```
+
+---
+
+## 6.7 method_critic
+
+### 职责
+
+在出现异常、停滞、失败时，判断问题是：
+
+* 执行没做好
+* 还是方法本身不对
+
+### 输入
+
+* current method card
+* implementation result
+* verifier signals
+* reviewer feedback
+
+### 输出
+
+```json
+{
+  "issue_type": "execution_failure|method_failure|insufficient_evidence|unexpected_signal",
+  "confidence": 0.74,
+  "reason": "...",
+  "recommendation": "retry|decompose|backtrack|collect_more_evidence"
+}
+```
+
+### 与 criteria_checker 的边界
+
+* criteria_checker：判断结果是否满足成功标准
+* method_critic：判断当前方法路线是否值得继续
+
+简化理解：
+
+* criteria 看 outcome
+* critic 看 strategy
+
+### 作用
+
+这是创新系统和普通重试系统的分水岭。
+没有这个模块，系统会把“方法错了”误当作“代码没写好”。
+
+---
+
+## 6.8 method_backtracker
+
+### 职责
+
+当 method_critic 判定方法失败时，切换到备用方法，而不是原地重试。
+
+### 输入
+
+* failed method
+* failure reason
+* backup methods
+
+### 输出
+
+```json
+{
+  "action": "switch_method",
+  "from_method": "m2",
+  "to_method": "m1",
+  "negative_constraints": [
+    "do_not_use_same_core_assumption",
+    "avoid_high_variance_unsupervised_step"
+  ]
+}
+```
+
+### 规则
+
+* 单 stage 最多一次 method-level backtrack
+* 整任务最多两次 global backtrack
+* 新方法与已失败方法相似度过高则拒绝切换
+
+---
+
+## 6.9 deep_verifier
+
+### 职责
+
+在所有阶段完成后做全局一致性检查。
+
+### 检查项
+
+* success criteria 是否真满足
+* 阶段结论之间有无逻辑矛盾
+* 最终结论是否超出证据支撑
+* 是否遗漏关键反例或竞争解释
+
+### 输出
+
+* approve
+* inject_fix_stage
+* trigger_method_review
+
+---
+
+## 6.10 innovation_summary_contract
+
+### 职责
+
+规定 summary_agent 在研究型任务中的标准输出，确保创新过程可解释、可审计。
+
+### 标准输出内容
+
+* 最终采用的方法族与 method_id
+* 被拒绝的方法族及其主要原因
+* 触发创新探索的关键矛盾、异常或停滞信号
+* 主方法胜出的依据（验证结果、信息价值、成本、可交付性）
+* 未验证完成但值得保留的候选思路
+
+### 输出价值
+
+* 用户不仅看到“最后做了什么”
+* 还能看到“为什么没选别的方法”
+* 有助于科学研究场景中的方法透明度与后续复查
+
+---
+
+## 7. TRIZ 在系统中的定位
+
+## 7.1 定位
+
+TRIZ 不是“创新总框架”，而是**contradiction-driven innovation operator**。
+
+### 严格调用门槛
+
+只有 contradiction_extractor 输出同时满足以下条件时，才进入 TRIZ：
+
+* improve_axis 明确
+* worsen_axis 明确
+* trade-off 可复述
+* 至少存在一个不可接受的折中
+
+否则：
+
+* 若核心问题是异常解释 → 优先 abduction
+* 若核心问题是维度组合 → 优先 morphology
+* 若问题尚不清晰 → 返回 problem reframing
+
+### 适用条件
+
+* 明显 trade-off
+* 两个目标相互冲突
+* 现有方法都在同一折中曲线上
+* 需要打破思维定式
+
+### 不适用条件
+
+* 问题本身尚未定义清楚
+* 主要困难是异常解释而非矛盾
+* 关键瓶颈在实验预算与采样，而非方法重写
+
+## 7.2 TRIZ 子模块建议
+
+### contradiction_extractor
+
+```json
+{
+  "improve_axis": "accuracy",
+  "worsen_axis": "interpretability",
+  "contradiction_type": "technical",
+  "statement": "提高预测性能会降低解释性"
+}
+```
+
+### triz_reframer
+
+输出：
+
+* IFR
+* available resources
+* forbidden trade-offs
+* candidate inventive principles
+
+### triz_instantiator
+
+将原则转成研究动作：
+
+* 重参数化
+* 模块化
+* 两阶段设计
+* 局部替代
+* 中介变量引入
+
+---
+
+## 8. 与其他创新方法的组合
+
+V1 推荐的创新算子组合：
+
+### 8.1 TRIZ
+
+负责：矛盾突破
+
+### 8.2 Abduction
+
+负责：异常解释、竞争假设
+
+### 8.3 Morphological Analysis
+
+负责：组合空间构造
+
+### 8.4 Baseline Method
+
+负责：提供常规可执行方案基线
+
+### 后续可扩展
+
+* analogy_transfer_operator
+* inverse_assumption_operator
+* failure_mode_inversion_operator
+* DOE / active_learning operator
+
+---
+
+## 8.1 新增：最小创新记忆（episodic innovation memory）
+
+V1.1 虽不做长期学习闭环，但应保留最小创新记忆，用于支持 selector 与 backtracker 避免重复犯错。
+
+### 记录结构
+
+```json
+{
+  "task_id": "...",
+  "method_id": "...",
+  "method_family": "TRIZ|abduction|morphology|baseline",
+  "core_hypothesis": "...",
+  "outcome": "succeeded|failed|inconclusive",
+  "failure_reason": "...",
+  "negative_constraints": ["..."],
+  "information_gain_summary": "..."
+}
+```
+
+### V1.1 用途
+
+* selector 可参考历史失败模式
+* backtracker 可避免切回相似失败方法
+* negative prompting 可显式排除已失败核心假设
+
+---
+
+## 8.2 与阶段类型的映射规则
+
+为了让 plan_instantiator 更稳定，需定义 method family 与 stage mode 的推荐映射。
+
+### 推荐映射
+
+* baseline
+
+  * 常产出：execution / verification stages
+* TRIZ
+
+  * 常产出：exploration / redesign stages
+* abduction
+
+  * 常产出：explanation / competing-hypothesis / evidence-gathering stages
+* morphology
+
+  * 常产出：candidate-enumeration / screening / comparison stages
+
+### 规则
+
+* 不是所有 method family 都应直接展开为 execution stage
+* 某些创新方法应先以 exploration stage 形式试探，再进入主执行
+* 若某方法缺少 cheap_test 或 falsification_test，不应直接生成高成本 execution stage
+
+---
+
+## 9. 数据结构设计
+
+## 9.1 Stage Record 扩展
+
+```python
+{
+    "index": int,
+    "stage_id": "s1",
+    "title": str,
+    "description": str,
+    "completed": bool,
+    "status": "pending|in_progress|approved|retrying|failed",
+    "mode": "execution|exploration|verification|synthesis",
+    "source_method_id": "m2",
+    "method_family": "TRIZ",
+    "implementation_result": str,
+    "depends_on": ["s0"],
+    "inputs_required": [...],
+    "outputs_produced": [...],
+    "evidence_refs": [...],
+    "subtasks": [...],
+    "attempt_count": 0,
+    "backtrack_count": 0,
+    "innovation_triggered": false
+}
+```
+
+## 9.2 Criteria Record 扩展
+
+```python
+{
+    "index": int,
+    "criteria": str,
+    "criterion_type": "hard|soft|qualitative",
+    "met": bool,
+    "evidence": str | None,
+    "verified_by": "programmatic|llm|human|hybrid"
+}
+```
+
+## 9.3 Method Record
+
+```python
+{
+    "method_id": "m1",
+    "method_family": "baseline|TRIZ|abduction|morphology",
+    "title": str,
+    "problem_reframe": str,
+    "core_hypothesis": str,
+    "cheap_test": str,
+    "failure_modes": list[str],
+    "orthogonality_tags": list[str],
+    "required_capabilities": list[str],
+    "status": "proposed|selected|standby|failed|succeeded",
+    "selection_score": float,
+    "rejection_reason": str | None
+}
+```
+
+---
+
+## 10. 状态机设计
+
+## 10.1 顶层状态
+
+```text
+framing
+  → method_discovery
+  → method_selection
+  → plan_instantiation
+  → execution
+  → verification
+  → summary
+```
+
+## 10.2 执行期子状态
+
+```text
+stage_execution
+  → programmatic_verification
+      if hard fail:
+         → retry or decompose
+      if warn:
+         → criteria_checker
+      if anomaly:
+         → method_critic
+             → retry / decompose / backtrack
+  → stage_reflection
+  → next_stage
+```
+
+## 10.3 回退规则
+
+* execution failure → 优先 retry
+* repeated failure + same method pattern → method_critic
+* method failure → switch to standby method
+* standby exhausted → escalate to discovery refresh
+
+---
+
+## 11. 开发路线图
+
+## Sprint 1：最小可用创新层
+
+### 目标
+
+让系统能够生成、选择、保存 method cards。
+
+### 范围
+
+* problem_framer
+* method_discovery_layer（baseline + TRIZ + abduction）
+* method_candidate_selector
+* plan_instantiator
+* method record schema
+
+### 验收标准
+
+* 对同一个任务至少生成 3 个 method cards
+* 至少 2 个 method family 不同
+* plan 明确标记 source_method_id
+* 备用方法可被记录
+
+---
+
+## Sprint 2：验证层与创新触发层
+
+### 目标
+
+让系统知道何时发散、并先做程序化验证。
+
+### 范围
+
+* innovation_trigger_detector
+* programmatic_verifier
+* criteria 类型分层
+* stage record 扩展
+
+### 验收标准
+
+* hard criteria 可阻断 LLM 误判
+* novelty-required 任务会进入 discovery mode
+* 异常结果可触发 method_critic
+
+---
+
+## Sprint 3：方法级回退
+
+### 目标
+
+失败时能换方法，而不是只重试。
+
+### 范围
+
+* method_critic
+* method_backtracker
+* negative constraints logging
+* backtrack budget
+
+### 验收标准
+
+* 至少一个失败场景中成功从主方法切换到备用方法
+* 切换后不会重复使用相同核心假设
+* backtrack 次数被正确限制
+
+---
+
+## Sprint 4：深度验证与阶段分解
+
+### 目标
+
+增强系统的全局一致性检查和复杂阶段拆分。
+
+### 范围
+
+* deep_verifier
+* stage_decomposer
+* exploration mode stages
+
+### 验收标准
+
+* deep_verifier 能识别证据不足结论
+* 复杂阶段可被拆为探索型子阶段
+
+---
+
+## 12. 最小实现优先级
+
+### P0（必须先做）
+
+1. Method Card schema
+2. problem_framer
+3. method_discovery_layer
+4. method_candidate_selector
+5. plan_instantiator
+
+### P1（第二批）
+
+6. innovation_trigger_detector
+7. programmatic_verifier
+8. method_critic
+
+### P2（第三批）
+
+9. method_backtracker
+10. deep_verifier
+11. stage_decomposer
+
+---
+
+## 13. 关键风险与缓解策略
+
+## 风险 1：方法候选只是换措辞，并不真的不同
+
+### 缓解
+
+* 强制 method_family 标签
+* 加 orthogonality_score
+* negative prompting 面向方法假设而不是文本表述
+
+## 风险 2：创新层增加大量成本，但没有增益
+
+### 缓解
+
+* discovery mode 仅在触发条件下开启
+* 默认只展开 top-1 method 为 full plan
+* 备用方法只在 backtrack 时激活
+
+## 风险 3：TRIZ 被滥用到不适用的问题上
+
+### 缓解
+
+* 只在 contradiction_extractor 检测到矛盾时调用
+* 问题定义模糊时优先 abduction / framing
+
+## 风险 4：回退导致无限循环
+
+### 缓解
+
+* 每 stage / 每 task 设置 backtrack budget
+* 相似方法禁止重复尝试
+* 记录 negative constraints
+
+---
+
+## 14. 成功指标
+
+## 14.1 系统级指标
+
+* 平均每任务 method family 数量
+* 被选中方法的平均正交性分数
+* 备用方法激活率
+* method-level backtrack 成功率
+* 触发 discovery mode 的任务完成率变化
+* programmatic verification 阻断的 LLM 误判数量
+
+## 14.2 质量指标
+
+* 创新任务中“非基线路线”采用率
+* 异常任务中的竞争解释覆盖率
+* 最终方案与 baseline 相比的增益
+* reviewer 对“方案平庸”的反馈下降率
+* 与 baseline 的核心假设差异度
+* 候选方法族覆盖数
+* 因同质化被淘汰的方法比例
+* 最终采用方案与 baseline 的结构差异度
+* falsification_test 执行率
+* 被 kill_conditions 提前终止的方法比例
+
+### 用途
+
+这些指标用于判断系统是否真的在进行方法创新，而不是仅仅生成语言表面不同的方案
+
+---
+
+## 14.3 真假创新识别指标
+
+---
+
+## 14.4 最小评测集设计
+
+V1.1 必须准备一组小型 benchmark tasks，用于验证 Innovation OS 是否在正确场景下创新，而不是盲目发散。
+
+### Benchmark A：常规执行任务
+
+目标：验证系统不会过度创新
+
+样例：
+
+* 复现已知分析流程
+* 整理实验结果并生成报告
+* 数据清洗与标准汇总
+
+验收点：
+
+* task_router 应将其归入 routine_mode
+* 不生成或极少生成 method cards
+* 总成本不显著高于原系统
+
+### Benchmark B：明显矛盾任务
+
+目标：验证 contradiction trigger 与 TRIZ operator
+
+样例：
+
+* 提高预测性能但不牺牲可解释性
+* 提高分辨率但控制噪声或成本
+
+验收点：
+
+* innovation_trigger_detector 能识别矛盾
+* TRIZ 被正确触发
+* 至少产出一个与 baseline 明显不同的方法候选
+
+### Benchmark C：异常解释任务
+
+目标：验证 abduction operator
+
+样例：
+
+* 某实验结果与理论预期相反
+* 某子群体行为与总体模式冲突
+
+验收点：
+
+* 能生成竞争性解释假设
+* method cards 包含 discriminating_evidence
+* summary 能清楚说明采用和拒绝理由
+
+### Benchmark D：多维设计空间任务
+
+目标：验证 morphology operator
+
+样例：
+
+* 多变量实验设计
+* 多模块方法组合选择
+
+验收点：
+
+* 能构造维度化搜索空间
+* 能生成组合式候选而不只是语言改写
+* selector 能淘汰明显不一致组合
+
+### 通用评测指标
+
+* 是否触发了正确模式（routine/hybrid/innovation）
+* 是否控制在预算内
+* baseline 是否始终保留
+* 最终方案是否与 baseline 有真实结构差异
+* summary 是否完整交代方法选择过程
+
+---
+
+## 15. 推荐的首版决策
+
+为降低复杂度，V1 建议直接采用以下固定策略：
+
+1. 默认生成 3 个方法候选：baseline + TRIZ + abduction/morphology（仅在 innovation_mode）
+2. 只展开 top-1 方法为 full plan，但 baseline 始终保留为保底路径
+3. top-2 作为备用方法保留
+4. hard checks 失败时阻断 criteria_checker
+5. 每个任务最多 1 次 method-level backtrack（受 backtrack_budget 控制）
+6. TRIZ 只在存在明确矛盾时触发
+7. discovery mode 只在 novelty / anomaly / contradiction 条件下触发
+
+---
+
+## 16. 最后结论
+
+这套“创新操作系统”在你现有基础上具备较强可行性。
+
+关键不是继续增强单一路径上的 planning，而是补上：
+
+* 方法发现
+* 创新触发
+* 方法评估
+* 方法回退
+
+在实现上，最重要的第一步不是做更大的树搜索，而是：
+
+**先把“创新思路”变成结构化方法对象（method card），再让系统围绕方法而不是围绕文本计划做选择。**
+
+这一步一旦完成，你的系统才真正从“会规划”迈向“会发现”。

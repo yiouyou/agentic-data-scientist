@@ -34,6 +34,8 @@ You should use tools to write the summary markdown file as `summary.md` into the
 **Stage-by-Stage Implementation History:**
 {stage_implementations?}
 
+{innovation_summary_section?}
+
 Use your tools to inspect the working directory for detailed results, figures, and outputs created during implementation.
 
 In the end, you should read and deliver what you wrote in summary.md as your final text response. You must not just say "I did analysis on user request XXX, answers saved". Instead you must always say: I did analysis on user request XXX with method YYY, and the results indicate that ZZZ (actual results, numerical or qualitative) with the reasoning behind it being ABCDEFG. You must fill all the contents in your response, not just write those to summary.md. You must include all solid results with content in your textual response as well.

@@ -28,8 +28,13 @@ from typing_extensions import override
 from agentic_data_scientist.agents.adk.event_compression import create_compression_callback
 from agentic_data_scientist.agents.adk.implementation_loop import make_implementation_agents
 from agentic_data_scientist.agents.adk.loop_detection import LoopDetectionAgent
+from agentic_data_scientist.agents.adk.method_discovery import MethodDiscoveryAgent
+from agentic_data_scientist.agents.adk.method_selector import MethodCandidateSelectorAgent
+from agentic_data_scientist.agents.adk.plan_instantiator import PlanInstantiatorAgent
 from agentic_data_scientist.agents.adk.plan_selector import PlanCandidateSelectorAgent
+from agentic_data_scientist.agents.adk.problem_framer import ProblemFramerAgent
 from agentic_data_scientist.agents.adk.review_confirmation import create_review_confirmation_agent
+from agentic_data_scientist.agents.adk.task_router import TaskRouterAgent
 from agentic_data_scientist.agents.adk.utils import (
     DEFAULT_MODEL_NAME,
     REVIEW_MODEL_NAME,
@@ -61,6 +66,13 @@ logging.getLogger("google_genai.types").setLevel(logging.WARNING)
 def _is_plan_only_enabled() -> bool:
     raw = os.getenv("ADS_PLAN_ONLY", "false").strip().lower()
     return raw not in {"0", "false", "off", "no"}
+
+
+def _get_innovation_mode() -> str:
+    raw = os.getenv("ADS_INNOVATION_MODE", "auto").strip().lower()
+    if raw in {"routine", "hybrid", "innovation", "auto"}:
+        return raw
+    return "auto"
 
 
 # ========================= Output Schemas (Pydantic BaseModel) =========================
@@ -402,9 +414,7 @@ def criteria_checker_callback(callback_context: CallbackContext):
 
     # Strict coverage rule: checker must return exactly one update per criterion
     if len(updates) != len(criteria):
-        logger.error(
-            f"[CriteriaChecker] Rejecting updates: expected {len(criteria)} updates, got {len(updates)}"
-        )
+        logger.error(f"[CriteriaChecker] Rejecting updates: expected {len(criteria)} updates, got {len(updates)}")
         return
 
     for update in updates:
@@ -440,9 +450,7 @@ def criteria_checker_callback(callback_context: CallbackContext):
         parsed_updates.append((idx, met, evidence))
 
     if seen_indices != expected_indices:
-        logger.error(
-            f"[CriteriaChecker] Rejecting updates: missing indices {sorted(expected_indices - seen_indices)}"
-        )
+        logger.error(f"[CriteriaChecker] Rejecting updates: missing indices {sorted(expected_indices - seen_indices)}")
         return
 
     logger.info("[CriteriaChecker] Updating criteria status")
@@ -641,6 +649,25 @@ class NonEscalatingLoopAgent(LoopAgent):
         return
 
 
+class _ModeGatedPlanningAgent(SequentialAgent):
+    """Runs its sub_agents only when INNOVATION_MODE is routine (or unset).
+
+    In auto-routing workflows the mode is decided at runtime by TaskRouterAgent.
+    When the resolved mode is hybrid/innovation the planning loop is unnecessary
+    because plan_instantiator already produces the HIGH_LEVEL_PLAN.
+    """
+
+    @override
+    async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
+        mode = str(ctx.session.state.get(StateKeys.INNOVATION_MODE, "routine") or "routine").strip()
+        if mode in ("hybrid", "innovation"):
+            logger.info("[ModeGatedPlanning] Skipping planning loop — mode=%s (innovation path active)", mode)
+            return
+
+        async for event in super()._run_async_impl(ctx):
+            yield event
+
+
 def create_agent(
     working_dir: Optional[str] = None,
     mcp_servers: Optional[List[str]] = None,
@@ -742,9 +769,11 @@ def create_agent(
         role="plan_parser",
         default_model_name=DEFAULT_MODEL_NAME,
     )
-    criteria_checker_model, criteria_checker_fallback_model, criteria_checker_selection = get_litellm_candidates_for_role(
-        role="criteria_checker",
-        default_model_name=REVIEW_MODEL_NAME,
+    criteria_checker_model, criteria_checker_fallback_model, criteria_checker_selection = (
+        get_litellm_candidates_for_role(
+            role="criteria_checker",
+            default_model_name=REVIEW_MODEL_NAME,
+        )
     )
     stage_reflector_model, stage_reflector_fallback_model, stage_reflector_selection = get_litellm_candidates_for_role(
         role="stage_reflector",
@@ -899,8 +928,7 @@ def create_agent(
     plan_candidate_selector = PlanCandidateSelectorAgent(
         name="plan_candidate_selector",
         description=(
-            "Ranks collected plan candidates with historical signals and keeps "
-            "baseline unless margin is strong."
+            "Ranks collected plan candidates with historical signals and keeps baseline unless margin is strong."
         ),
     )
 
@@ -1013,44 +1041,191 @@ def create_agent(
 
     # ------------------------- Stage Orchestrator -------------------------
 
+    innovation_mode = _get_innovation_mode()
+    logger.info(f"[AgenticDS] Innovation mode: {innovation_mode}")
     logger.info("[AgenticDS] Creating stage orchestrator")
 
     from agentic_data_scientist.agents.adk.stage_orchestrator import StageOrchestratorAgent
+
+    method_critic_agent = None
+    method_backtracker_agent = None
+    stage_decomposer_agent = None
+    if innovation_mode != "routine":
+        from agentic_data_scientist.agents.adk.method_critic import MethodCriticAgent
+        from agentic_data_scientist.agents.adk.method_backtracker import MethodBacktrackerAgent
+        from agentic_data_scientist.agents.adk.stage_decomposer import StageDecomposerAgent
+
+        method_critic_agent = MethodCriticAgent(
+            name="method_critic",
+            model=plan_maker_model,
+            fallback_model=plan_maker_fallback_model,
+        )
+        method_backtracker_agent = MethodBacktrackerAgent(name="method_backtracker")
+        stage_decomposer_agent = StageDecomposerAgent(
+            name="stage_decomposer",
+            model=plan_maker_model,
+            fallback_model=plan_maker_fallback_model,
+        )
 
     stage_orchestrator = StageOrchestratorAgent(
         implementation_loop=implementation_loop,
         criteria_checker=success_criteria_checker,
         stage_reflector=stage_reflector,
+        method_critic=method_critic_agent,
+        method_backtracker=method_backtracker_agent,
+        stage_decomposer=stage_decomposer_agent,
         name="stage_orchestrator",
         description="Orchestrates stage-by-stage implementation with adaptive planning.",
     )
 
+    # ------------------------- Deep Verifier -------------------------
+
+    from agentic_data_scientist.agents.adk.deep_verifier import DeepVerifierAgent
+
+    deep_verifier = DeepVerifierAgent(
+        name="deep_verifier",
+        model=plan_maker_model,
+        fallback_model=plan_maker_fallback_model,
+    )
+
     # ------------------------- Root Workflow -------------------------
 
+    method_discovery = MethodDiscoveryAgent(
+        name="method_discovery",
+        model=plan_maker_model,
+        fallback_model=plan_maker_fallback_model,
+        description="Generates diverse method card candidates via iterative LLM calls.",
+    )
+    method_candidate_selector = MethodCandidateSelectorAgent(
+        name="method_candidate_selector",
+        model=plan_maker_model,
+        fallback_model=plan_maker_fallback_model,
+        description="Scores and ranks method card candidates, selects top-1.",
+    )
+    plan_instantiator = PlanInstantiatorAgent(
+        name="plan_instantiator",
+        model=plan_maker_model,
+        fallback_model=plan_maker_fallback_model,
+        description="Converts selected Method Card into a concrete high-level plan.",
+    )
+    innovation_agents = [method_discovery, method_candidate_selector, plan_instantiator]
+
+    # ProblemFramer is needed for TRIZ/abduction operators (Phase 3-A) whenever
+    # innovation agents run — not just in auto mode.
+    innovation_framer_prefix: list = []
+    if innovation_mode in ("hybrid", "innovation"):
+        problem_framer_for_innovation = ProblemFramerAgent(
+            name="problem_framer",
+            model=plan_maker_model,
+            fallback_model=plan_maker_fallback_model,
+            description="Analyzes user request into structured problem statement.",
+        )
+        innovation_framer_prefix = [problem_framer_for_innovation]
+
+    auto_routing_prefix: list = []
+    mode_gated_planning_loop = None
+    if innovation_mode == "auto":
+        problem_framer = ProblemFramerAgent(
+            name="problem_framer",
+            model=plan_maker_model,
+            fallback_model=plan_maker_fallback_model,
+            description="Analyzes user request into structured problem statement.",
+        )
+        task_router = TaskRouterAgent(
+            name="task_router",
+            description="Decides innovation mode from framed problem via rules engine.",
+        )
+        auto_routing_prefix = [problem_framer, task_router]
+        mode_gated_planning_loop = _ModeGatedPlanningAgent(
+            name="mode_gated_planning_loop",
+            description="Planning loop that self-skips when innovation agents handle plan generation.",
+            sub_agents=[high_level_planning_loop],
+        )
+
+    plan_only = _is_plan_only_enabled()
     logger.info("[AgenticDS] Creating root workflow")
-    if _is_plan_only_enabled():
+
+    if innovation_mode == "auto":
+        assert mode_gated_planning_loop is not None  # guaranteed by auto branch above
+        if plan_only:
+            logger.info("[AgenticDS] ADS_PLAN_ONLY enabled: execution loop and summary stage are skipped")
+            workflow = SequentialAgent(
+                name="agentic_data_scientist_workflow",
+                description="Auto-routing planning-only workflow.",
+                sub_agents=[
+                    *auto_routing_prefix,
+                    *innovation_agents,
+                    mode_gated_planning_loop,
+                    plan_candidate_selector,
+                    high_level_plan_parser,
+                ],
+            )
+        else:
+            workflow = SequentialAgent(
+                name="agentic_data_scientist_workflow",
+                description="Auto-routing workflow with runtime mode resolution.",
+                sub_agents=[
+                    *auto_routing_prefix,
+                    *innovation_agents,
+                    mode_gated_planning_loop,
+                    plan_candidate_selector,
+                    high_level_plan_parser,
+                    stage_orchestrator,
+                    deep_verifier,
+                    summary_agent,
+                ],
+            )
+    elif plan_only:
         logger.info("[AgenticDS] ADS_PLAN_ONLY enabled: execution loop and summary stage are skipped")
-        workflow = SequentialAgent(
-            name="agentic_data_scientist_workflow",
-            description="Planning-only workflow: generates and parses high-level plan without implementation.",
-            sub_agents=[
-                high_level_planning_loop,
-                plan_candidate_selector,
-                high_level_plan_parser,
-            ],
-        )
+        if innovation_mode in ("hybrid", "innovation"):
+            workflow = SequentialAgent(
+                name="agentic_data_scientist_workflow",
+                description="Innovation planning-only workflow: method discovery, plan instantiation, and parsing.",
+                sub_agents=[
+                    *innovation_framer_prefix,
+                    *innovation_agents,
+                    plan_candidate_selector,
+                    high_level_plan_parser,
+                ],
+            )
+        else:
+            workflow = SequentialAgent(
+                name="agentic_data_scientist_workflow",
+                description="Planning-only workflow: generates and parses high-level plan without implementation.",
+                sub_agents=[
+                    high_level_planning_loop,
+                    plan_candidate_selector,
+                    high_level_plan_parser,
+                ],
+            )
     else:
-        workflow = SequentialAgent(
-            name="agentic_data_scientist_workflow",
-            description="Complete Agentic Data Scientist workflow with adaptive stage-wise implementation.",
-            sub_agents=[
-                high_level_planning_loop,
-                plan_candidate_selector,
-                high_level_plan_parser,
-                stage_orchestrator,
-                summary_agent,
-            ],
-        )
+        if innovation_mode in ("hybrid", "innovation"):
+            workflow = SequentialAgent(
+                name="agentic_data_scientist_workflow",
+                description="Innovation workflow: method discovery, plan instantiation, execution, and summary.",
+                sub_agents=[
+                    *innovation_framer_prefix,
+                    *innovation_agents,
+                    plan_candidate_selector,
+                    high_level_plan_parser,
+                    stage_orchestrator,
+                    deep_verifier,
+                    summary_agent,
+                ],
+            )
+        else:
+            workflow = SequentialAgent(
+                name="agentic_data_scientist_workflow",
+                description="Complete Agentic Data Scientist workflow with adaptive stage-wise implementation.",
+                sub_agents=[
+                    high_level_planning_loop,
+                    plan_candidate_selector,
+                    high_level_plan_parser,
+                    stage_orchestrator,
+                    deep_verifier,
+                    summary_agent,
+                ],
+            )
 
     logger.info("[AgenticDS] Agent creation complete")
 

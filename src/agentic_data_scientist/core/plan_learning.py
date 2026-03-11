@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import math
 import re
-from typing import Any, Dict, List
+import statistics
+from typing import Any, Dict, List, Optional
 
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]+")
@@ -131,12 +133,135 @@ def _historical_pattern_score(plan_text: str, history_signals: Dict[str, Any]) -
     return score
 
 
+def _dag_validity_score(parsed_stages: List[Dict[str, Any]]) -> float:
+    """Check that ``depends_on`` references form a valid DAG (no cycles, no dangling refs).
+
+    Returns 0.10 for a valid DAG, 0.0 for empty/missing dependency data,
+    and -0.10 for cycles or invalid references.
+    """
+    if not parsed_stages:
+        return 0.0
+
+    stage_ids = {s.get("stage_id", f"s{s.get('index', i) + 1}") for i, s in enumerate(parsed_stages)}
+    if not stage_ids:
+        return 0.0
+
+    has_any_deps = False
+    for stage in parsed_stages:
+        deps = stage.get("depends_on", [])
+        if not isinstance(deps, list):
+            continue
+        for dep in deps:
+            has_any_deps = True
+            if dep not in stage_ids:
+                return -0.10
+
+    if not has_any_deps:
+        return 0.0
+
+    # Topological-sort cycle detection via Kahn's algorithm
+    adj: Dict[str, List[str]] = {sid: [] for sid in stage_ids}
+    in_degree: Dict[str, int] = {sid: 0 for sid in stage_ids}
+    for stage in parsed_stages:
+        sid = stage.get("stage_id", f"s{stage.get('index', 0) + 1}")
+        for dep in stage.get("depends_on", []):
+            if dep in adj:
+                adj[dep].append(sid)
+                in_degree[sid] = in_degree.get(sid, 0) + 1
+
+    queue = [sid for sid, deg in in_degree.items() if deg == 0]
+    visited = 0
+    while queue:
+        node = queue.pop(0)
+        visited += 1
+        for neighbour in adj.get(node, []):
+            in_degree[neighbour] -= 1
+            if in_degree[neighbour] == 0:
+                queue.append(neighbour)
+
+    if visited < len(stage_ids):
+        return -0.10
+
+    return 0.10
+
+
+def _dataflow_coverage_score(parsed_stages: List[Dict[str, Any]]) -> float:
+    """Check that every ``inputs_required`` is satisfied by some prior stage's ``outputs_produced``.
+
+    Returns 0.10 for full coverage, scaled down proportionally for partial coverage,
+    and 0.0 if no dataflow metadata is present.
+    """
+    if not parsed_stages:
+        return 0.0
+
+    available_outputs: set[str] = set()
+    total_inputs = 0
+    satisfied_inputs = 0
+
+    for stage in parsed_stages:
+        inputs_req = stage.get("inputs_required", [])
+        if isinstance(inputs_req, list):
+            for inp in inputs_req:
+                inp_lower = str(inp).strip().lower()
+                if not inp_lower:
+                    continue
+                total_inputs += 1
+                if inp_lower in available_outputs:
+                    satisfied_inputs += 1
+
+        outputs_prod = stage.get("outputs_produced", [])
+        if isinstance(outputs_prod, list):
+            for out in outputs_prod:
+                out_lower = str(out).strip().lower()
+                if out_lower:
+                    available_outputs.add(out_lower)
+
+    if total_inputs == 0:
+        return 0.0
+
+    coverage = satisfied_inputs / total_inputs
+    return 0.10 * coverage
+
+
+def _granularity_uniformity_score(parsed_stages: List[Dict[str, Any]]) -> float:
+    """Penalize plans where stage descriptions vary wildly in length (proxy for uneven granularity).
+
+    Returns 0.06 for uniform stages, decreasing toward 0.0 for high variance.
+    Uses coefficient of variation (stdev / mean) of description lengths.
+    """
+    if len(parsed_stages) < 2:
+        return 0.06
+
+    lengths = []
+    for stage in parsed_stages:
+        desc = stage.get("description", "") or ""
+        lengths.append(len(desc))
+
+    if not lengths or all(l == 0 for l in lengths):
+        return 0.0
+
+    mean_len = statistics.mean(lengths)
+    if mean_len == 0:
+        return 0.0
+
+    stdev_len = statistics.stdev(lengths)
+    cv = stdev_len / mean_len
+
+    # cv < 0.5 → full bonus; cv > 2.0 → zero bonus
+    if cv <= 0.5:
+        return 0.06
+    if cv >= 2.0:
+        return 0.0
+    return 0.06 * (1.0 - (cv - 0.5) / 1.5)
+
+
 def score_plan_candidate(
     *,
     user_request: str,
     candidate_plan: str,
     history_signals: Dict[str, Any],
     is_baseline: bool,
+    parsed_stages: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Score one candidate with conservative priors."""
     stage_titles = extract_stage_titles_from_plan(candidate_plan)
@@ -147,25 +272,38 @@ def score_plan_candidate(
     score += _stage_count_score(stage_count)
     score += _historical_pattern_score(candidate_plan, history_signals)
 
+    structural_scores: Dict[str, float] = {}
+    if parsed_stages:
+        dag_score = _dag_validity_score(parsed_stages)
+        dataflow_score = _dataflow_coverage_score(parsed_stages)
+        granularity_score = _granularity_uniformity_score(parsed_stages)
+        score += dag_score + dataflow_score + granularity_score
+        structural_scores = {
+            "dag_validity": dag_score,
+            "dataflow_coverage": dataflow_score,
+            "granularity_uniformity": granularity_score,
+        }
+
     hot = history_signals.get("hot", {})
     run_count = int(hot.get("run_count", 0) or 0)
     retry_rate = _safe_float(hot.get("stage_retry_rate"), 0.0)
-    # Conservative: if history volume is low or retries are high, penalize aggressive switching.
     if run_count < 10:
         score -= 0.03
     score -= min(0.08, 0.12 * max(0.0, retry_rate))
 
-    # Keep approved baseline sticky unless alternatives are clearly better.
     if is_baseline:
         score += 0.08
 
     score = max(-1.0, min(1.0, score))
 
-    return {
+    result: Dict[str, Any] = {
         "score": score,
         "stage_count": stage_count,
         "stage_titles": stage_titles[:6],
     }
+    if structural_scores:
+        result["structural_scores"] = structural_scores
+    return result
 
 
 def rank_plan_candidates(

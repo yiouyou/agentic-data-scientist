@@ -36,12 +36,29 @@ class StateKeys:
     PARSED_PLAN_OUTPUT = "parsed_plan_output"
     CRITERIA_CHECKER_OUTPUT = "criteria_checker_output"
     STAGE_REFLECTOR_OUTPUT = "stage_reflector_output"
+    PROGRAMMATIC_VERIFICATION = "programmatic_verification"
+    WORKING_DIR = "working_dir"
 
     IMPLEMENTATION_SUMMARY = "implementation_summary"
     REVIEW_FEEDBACK = "review_feedback"
     PLAN_REVIEW_CONFIRMATION_DECISION = "plan_review_confirmation_decision"
     IMPLEMENTATION_REVIEW_CONFIRMATION_DECISION = "implementation_review_confirmation_decision"
     USER_MESSAGE = "user_message"
+
+    # Phase 1: Innovation OS
+    METHOD_CANDIDATES = "method_candidates"
+    SELECTED_METHOD = "selected_method"
+    STANDBY_METHODS = "standby_methods"
+    METHOD_SELECTION_TRACE = "method_selection_trace"
+    INNOVATION_MODE = "innovation_mode"
+    INNOVATION_BUDGET = "innovation_budget"
+
+    # Phase 2: Innovation OS V1.1 — Intelligence Layer
+    FRAMED_PROBLEM = "framed_problem"
+    INNOVATION_TRIGGER = "innovation_trigger"
+    METHOD_CRITIC_OUTPUT = "method_critic_output"
+    BACKTRACK_HISTORY = "backtrack_history"
+    DEEP_VERIFICATION = "deep_verification"
 
 
 class StageStatus:
@@ -87,6 +104,8 @@ def make_stage_record(
     outputs_produced: Optional[List[str]] = None,
     evidence_refs: Optional[List[str]] = None,
     subtasks: Optional[List[Dict[str, Any]]] = None,
+    source_method_id: Optional[str] = None,
+    method_family: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create a normalized stage record."""
     status = StageStatus.APPROVED if completed else StageStatus.PENDING
@@ -104,6 +123,8 @@ def make_stage_record(
         "outputs_produced": list(outputs_produced or []),
         "evidence_refs": list(evidence_refs or []),
         "subtasks": list(subtasks or []),
+        "source_method_id": source_method_id,
+        "method_family": method_family,
     }
 
 
@@ -114,6 +135,7 @@ def make_success_criterion_record(*, index: int, criteria: str) -> Dict[str, Any
         "criteria": criteria,
         "met": False,
         "evidence": None,
+        "verified_by": None,
     }
 
 
@@ -124,6 +146,8 @@ def build_initial_state_delta(
     agent_type: str,
 ) -> Dict[str, str]:
     """Build the initial state delta passed to the ADK runner."""
+    import os
+
     state = {
         StateKeys.ORIGINAL_USER_INPUT: original_message,
         StateKeys.LATEST_USER_INPUT: original_message,
@@ -131,6 +155,12 @@ def build_initial_state_delta(
     }
     if agent_type == "claude_code":
         state[StateKeys.IMPLEMENTATION_TASK] = rendered_prompt
+
+    innovation_mode = os.getenv("ADS_INNOVATION_MODE", "auto").strip().lower()
+    if innovation_mode in {"routine", "hybrid", "innovation", "auto"}:
+        state[StateKeys.INNOVATION_MODE] = innovation_mode
+
+    state["innovation_summary_section"] = ""
     return state
 
 

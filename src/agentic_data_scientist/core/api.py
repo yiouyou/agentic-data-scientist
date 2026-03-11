@@ -390,10 +390,7 @@ class DataScientist:
                 executor=direct_executor,
                 working_dir=str(self.working_dir),
                 name="direct_coding_agent",
-                description=(
-                    "Direct coding agent for simple mode. "
-                    f"Executor={direct_executor}"
-                ),
+                description=(f"Direct coding agent for simple mode. Executor={direct_executor}"),
                 model=os.getenv("CODING_MODEL", "claude-sonnet-4-6"),
                 fallback_model=None,
                 fallback_max_retries=0,
@@ -642,6 +639,7 @@ class DataScientist:
                 rendered_prompt=prompt,
                 agent_type=self.config.agent_type,
             )
+            initial_state[StateKeys.WORKING_DIR] = str(self.working_dir)
 
             async for event in self.runner.run_async(
                 user_id="default_user",
@@ -796,6 +794,7 @@ class DataScientist:
                 rendered_prompt=prompt,
                 agent_type=self.config.agent_type,
             )
+            initial_state[StateKeys.WORKING_DIR] = str(self.working_dir)
 
             async for event in self.runner.run_async(
                 user_id="default_user",

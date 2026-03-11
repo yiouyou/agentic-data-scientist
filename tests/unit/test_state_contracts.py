@@ -70,6 +70,7 @@ def test_stage_and_criterion_record_builders():
     assert criterion["criteria"] == "C"
     assert criterion["met"] is False
     assert criterion["evidence"] is None
+    assert criterion["verified_by"] is None
 
 
 def test_review_confirmation_decision_key_mapping():
@@ -84,3 +85,13 @@ def test_review_confirmation_decision_key_mapping():
 def test_review_confirmation_decision_key_fallback():
     """Unknown prompt names should keep backward-compatible key generation."""
     assert review_confirmation_decision_key("custom_review") == "custom_review_decision"
+
+
+def test_state_keys_programmatic_verification_exists():
+    assert hasattr(StateKeys, "PROGRAMMATIC_VERIFICATION")
+    assert StateKeys.PROGRAMMATIC_VERIFICATION == "programmatic_verification"
+
+
+def test_state_keys_working_dir_exists():
+    assert hasattr(StateKeys, "WORKING_DIR")
+    assert StateKeys.WORKING_DIR == "working_dir"

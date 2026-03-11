@@ -17,12 +17,14 @@ from google.genai import types
 from pydantic import PrivateAttr
 
 from agentic_data_scientist.agents.adk.event_compression import compress_events_manually
+from agentic_data_scientist.agents.adk.innovation_trigger import compute_trigger_result
 from agentic_data_scientist.core.state_contracts import (
     StageStatus,
     StateKeys,
     ensure_stage_status,
     set_stage_status,
 )
+from agentic_data_scientist.core.programmatic_verifier import run_programmatic_checks
 
 
 logger = logging.getLogger(__name__)
@@ -119,16 +121,21 @@ class StageOrchestratorAgent(BaseAgent):
         Agent description
     """
 
-    # Use PrivateAttr for agent references since they shouldn't be serialized
     _implementation_loop: Any = PrivateAttr()
     _criteria_checker: Any = PrivateAttr()
     _stage_reflector: Any = PrivateAttr()
+    _method_critic: Any = PrivateAttr(default=None)
+    _method_backtracker: Any = PrivateAttr(default=None)
+    _stage_decomposer: Any = PrivateAttr(default=None)
 
     def __init__(
         self,
         implementation_loop: BaseAgent,
         criteria_checker: BaseAgent,
         stage_reflector: BaseAgent,
+        method_critic: BaseAgent | None = None,
+        method_backtracker: BaseAgent | None = None,
+        stage_decomposer: BaseAgent | None = None,
         name: str = "stage_orchestrator",
         description: str = "Orchestrates stage-by-stage implementation with criteria checking",
     ):
@@ -136,6 +143,9 @@ class StageOrchestratorAgent(BaseAgent):
         self._implementation_loop = implementation_loop
         self._criteria_checker = criteria_checker
         self._stage_reflector = stage_reflector
+        self._method_critic = method_critic
+        self._method_backtracker = method_backtracker
+        self._stage_decomposer = stage_decomposer
 
     @property
     def implementation_loop(self) -> BaseAgent:
@@ -511,6 +521,39 @@ class StageOrchestratorAgent(BaseAgent):
                 logger.info(
                     f"[StageOrchestrator] Stage {stage_idx} not approved on attempt {attempts}. Reason: {decision_reason}"
                 )
+
+                # === Phase 2: Method Critic + Backtracker ===
+                innovation_mode = str(state.get(StateKeys.INNOVATION_MODE, "routine") or "routine").strip()
+                if innovation_mode != "routine" and attempts >= 2 and self._method_critic is not None:
+                    logger.info("[StageOrchestrator] Running method_critic (attempts=%d)", attempts)
+                    try:
+                        async for event in self._method_critic.run_async(ctx):
+                            yield event
+                    except Exception as mc_err:
+                        logger.warning("[StageOrchestrator] Method critic failed: %s", mc_err)
+
+                    critic_output = state.get(StateKeys.METHOD_CRITIC_OUTPUT)
+                    if (
+                        isinstance(critic_output, dict)
+                        and critic_output.get("recommendation") == "backtrack"
+                        and self._method_backtracker is not None
+                    ):
+                        logger.info("[StageOrchestrator] Running method_backtracker")
+                        try:
+                            async for event in self._method_backtracker.run_async(ctx):
+                                yield event
+                        except Exception as mb_err:
+                            logger.warning("[StageOrchestrator] Method backtracker failed: %s", mb_err)
+
+                # === Phase 3-B: Stage Decomposer ===
+                if attempts >= 2 and self._stage_decomposer is not None:
+                    logger.info("[StageOrchestrator] Running stage_decomposer (attempt=%d)", attempts)
+                    try:
+                        async for event in self._stage_decomposer.run_async(ctx):
+                            yield event
+                    except Exception as sd_err:
+                        logger.warning("[StageOrchestrator] Stage decomposer failed: %s", sd_err)
+
                 continue
 
             # Store implementation result (but don't mark as completed yet)
@@ -531,6 +574,40 @@ class StageOrchestratorAgent(BaseAgent):
                 finished_at=attempt_finished_at.isoformat(timespec="milliseconds"),
                 duration_seconds=attempt_duration_seconds,
             )
+
+            # === Run Programmatic Verifier (before criteria_checker) ===
+            working_dir = state.get(StateKeys.WORKING_DIR, "")
+            if working_dir:
+                try:
+                    criteria = state.get(StateKeys.HIGH_LEVEL_SUCCESS_CRITERIA, [])
+                    verification = run_programmatic_checks(
+                        working_dir=working_dir,
+                        stage=next_stage,
+                        criteria=criteria,
+                    )
+                    state[StateKeys.PROGRAMMATIC_VERIFICATION] = verification.to_summary()
+
+                    verification_event = Event(
+                        author=self.name,
+                        content=types.Content(
+                            role="model",
+                            parts=[types.Part(text=f"\n\n{verification.to_summary()}\n\n")],
+                        ),
+                        turn_complete=False,
+                    )
+                    yield verification_event
+
+                    logger.info(
+                        "[StageOrchestrator] Programmatic verification for stage %d: %s",
+                        stage_idx,
+                        verification.verdict,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "[StageOrchestrator] Programmatic verifier failed for stage %d: %s",
+                        stage_idx,
+                        e,
+                    )
 
             # === Run Success Criteria Checker ===
             logger.info("")
@@ -569,6 +646,49 @@ class StageOrchestratorAgent(BaseAgent):
                     turn_complete=False,
                 )
                 yield error_event
+
+            # === Phase 2: Innovation Trigger Detection ===
+            innovation_mode = str(state.get(StateKeys.INNOVATION_MODE, "routine") or "routine").strip()
+            if innovation_mode != "routine":
+                try:
+                    criteria = state.get(StateKeys.HIGH_LEVEL_SUCCESS_CRITERIA, [])
+                    criteria_met_history = [sum(1 for c in criteria if c.get("met", False))]
+                    existing_history = state.get("_criteria_met_history") or []
+                    existing_history.append(criteria_met_history[0])
+                    state["_criteria_met_history"] = existing_history
+
+                    review_text = str(state.get(StateKeys.REVIEW_FEEDBACK, "") or "")
+                    verifier_summary = str(state.get(StateKeys.PROGRAMMATIC_VERIFICATION, "") or "")
+
+                    trigger_result = compute_trigger_result(
+                        review_text=review_text,
+                        attempts=int(next_stage.get("attempts", 0)),
+                        criteria_met_history=existing_history,
+                        verifier_summary=verifier_summary,
+                    )
+                    state[StateKeys.INNOVATION_TRIGGER] = trigger_result
+
+                    if trigger_result.get("triggered"):
+                        trigger_event = Event(
+                            author=self.name,
+                            content=types.Content(
+                                role="model",
+                                parts=[
+                                    types.Part(
+                                        text=(
+                                            f"\n\n🔍 Innovation trigger detected: "
+                                            f"signals={trigger_result.get('signals')}, "
+                                            f"strength={trigger_result.get('strength'):.2f}, "
+                                            f"action={trigger_result.get('recommended_action')}\n\n"
+                                        )
+                                    )
+                                ],
+                            ),
+                            turn_complete=False,
+                        )
+                        yield trigger_event
+                except Exception as it_err:
+                    logger.warning("[StageOrchestrator] Innovation trigger detection failed: %s", it_err)
 
             # === Run Stage Reflector ===
             logger.info("")

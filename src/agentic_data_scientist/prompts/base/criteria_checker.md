@@ -65,6 +65,9 @@ For each criterion, provide:
 **Original User Request:**
 {original_user_input?}
 
+**Programmatic Verification (automated pre-check):**
+{programmatic_verification?}
+
 **Success Criteria to Check:**
 {high_level_success_criteria?}
 
